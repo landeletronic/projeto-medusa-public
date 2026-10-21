@@ -1,0 +1,190 @@
+================================================================================
+MEDUSA-C2-DOC-UX-R1 — BIBLIOTECA DE DOCUMENTOS E VISUALIZACAO OCR
+================================================================================
+
+Projeto ....: Caribbean Pirates GPT — Davy-Jones + Medusa
+Servidor ....: medusa (Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic)
+Interface ...: https://medusa.escritorio.local:5080/admin/registry
+Base ........: MEDUSA-C1-C2-FOUNDATION-01
+Data ........: 2026-10-15, 17:53 - 18:16 (-03:00)
+Executor ....: tlandskron (uid=1000), sudo NOPASSWD
+
+CLASSIFICACAO FINAL: C2_DOC_UX_R1_COMPLETE
+
+Rollback: NAO EXECUTADO. Nenhuma regressao, nenhuma perda de dados.
+Nenhuma pessoa real cadastrada. Nenhuma credencial humana testada.
+Nenhum documento real alterado (rotulo sintetico criado e removido).
+Nenhum segredo neste relatorio.
+
+================================================================================
+1. DIAGNOSTICO DA FALHA JAVASCRIPT
+================================================================================
+
+  Mensagem observada: `regOcr is not defined` na pagina /admin/registry.
+
+  CAUSA RAIZ (confirmada no codigo, app/registry_views.py):
+  a funcao boot() continha `await regOcr()`, mas nenhuma funcao regOcr foi
+  definida — existia apenas um handler inline em
+  `$('reg-ocr-refresh').onclick=...`. Na carga da pagina, boot() lancava
+  ReferenceError, capturado pelo `.catch(e=>msg(e.message))`, exibindo o erro
+  no elemento de status. As secoes de pessoas ja haviam carregado (chamadas
+  anteriores no boot), por isso a pagina parecia "quase funcional".
+
+  CORRECAO: definida `async function regOcr()` como carregadora oficial da
+  Biblioteca (lista + filtros + renderizacao dos cartoes); o botao Atualizar
+  e o boot() passam a chama-la. Verificado: `regOcr definida`, boot sem
+  referencias pendentes, node --check limpo.
+
+================================================================================
+2. ARQUIVOS ALTERADOS, BACKUPS E HASHES
+================================================================================
+
+  Backup: /home/tlandskron/backups/c2-doc-ux-r1-20261015-175306 (700)
+  registry_views.py.orig, index.html.orig, davy.py.orig, registry.py.orig
+  + rollback.sh (restaura os 4 arquivos + restart + verifica).
+
+  Alteracoes:
+  - app/registry_views.py .. 10.237 -> 19.212 B (Biblioteca + modal + fluxos)
+  - app/registry.py ........ +ocr_completed estendido, +doc_label_history
+  - app/davy.py ............ +rota GET /registry/documents/<id>/history
+  - app/index.html ......... NENHUMA (seletor DOCX ja exibia rotulos; ver 7)
+  - tests/test_registry.py . +3 testes (shape, historico, gating de vinculo)
+  - tests/registry_browser_check.py (novo; 9 checagens de navegador)
+
+  SHA-256 atuais:
+  registry_views.py  3d4112360ca16fa49aa844009458461d53f5f85dd1342109a72d238a40aafe98
+  registry.py        b0d20219bb2f3f4d23be812cf07a9f24dd227bf6319001b2974d246547deb819
+
+================================================================================
+3. BIBLIOTECA DE DOCUMENTOS
+================================================================================
+
+  Acesso: Cadastro Universal (/admin/registry, ADMIN) → secao Biblioteca.
+  Titulo usa o nome amigavel; sem nome, descricao provisoria
+  "Documento <tipo> · <data>" (nunca UUID como titulo; IDs so em <details>).
+  Cada cartao: selo "OCR concluído", selo de revisao em linguagem factual
+  (Aguardando revisão / Revisão parcial / Campos revisados — sem inferir
+  aprovacao global de campo unico), tipo, data, indicador de vinculo
+  ("Não vinculado a pessoa" quando vazio), botoes Visualizar e Historico.
+  Pesquisa por nome (LIKE escapado, min 2), filtros por tipo e revisao,
+  ordenacao por data (updated DESC). Sem FTS, sem Qdrant, sem servicos externos.
+
+================================================================================
+4. VISUALIZACAO DO ORIGINAL
+================================================================================
+
+  Modal (role=dialog, aria-modal, foco gerenciado, Esc fecha) com: imagens
+  originais (todas as do job — frente/verso quando houver), tipo, data, nome,
+  estado OCR, campos extraidos (nome/valor/status por campo, via /jobs/<id>
+  com revisoes projetadas), situacao de revisao, vinculos, formulario de
+  nome, gerenciador de vinculos e detalhes tecnicos.
+  Imagens via /documents/ocr/<job>/files/<image> com X-CSRF-Token (mesmo
+  mecanismo autenticado do OCR; job_allowed no servidor; ADMIN passa).
+  Sem tokens em URL, sem navegacao no filesystem (IDs validados HEX32 nos
+  dois lados), sem downloads forcados. Blobs revogados ao fechar.
+  Sem imagem associada: mensagem clara (sem miniatura falsa).
+
+================================================================================
+5. NOMES AMIGAVEIS E VINCULOS
+================================================================================
+
+  Renomear: botao no cartao/modal → ve o documento → digita o nome →
+  confirma → grava por document_id + historico (DOC_LABEL_SET/RENAMED).
+  Nunca digita IDs. Nunca altera hash/conteudo/proveniencia/revisoes/job.
+  Vincular: botao no modal → pesquisa pessoa por nome → seleciona →
+  confere dados → escolhe estado → confirma explicitamente → grava.
+  Sem criacao automatica de pessoa; sem match por nome OCR; sem alteracao de
+  vinculos ao renomear. Estados CONFIRMED/PENDING/DISPUTED preservados.
+
+================================================================================
+6. INTEGRACAO DOCX
+================================================================================
+
+  Verificada sem alteracao: o datalist da area DOCX ja resolve nomes via
+  /registry/documents/ocr-completed (fallback identico quando sem rotulo ou
+  sem permissao). Contrato validate_selection, association_confirmed,
+  revisoes obrigatorias, templates e geracao deterministica: intactos.
+  Nenhuma mudanca foi necessaria — alteracao evitada conforme a especificacao.
+
+================================================================================
+7. SEGURANCA E DADOS
+================================================================================
+
+  ADMIN-only preservado (pagina e APIs; USER 403 verificado ao vivo).
+  XSS: todo conteudo via textContent; sem innerHTML; IDs validados.
+  IDOR: IDs validados + existencia verificada + job_allowed nas imagens.
+  Sem token: 401. Job inexistente: 404. Sem confirmacao: 400.
+  PII: nomes/CPF exibidos somente na pagina ADMIN; nenhum RG/CPF/endereco ou
+  imagem real em relatorios; logs sem PII formatada nova.
+  Caddy/rede/diretorios: inalterados.
+
+================================================================================
+8. TESTES
+================================================================================
+
+  8.1 UNITARIOS (tests/test_registry.py, DB temporario): 22/22 OK
+    19 da fundacao + shape do ocr-completed, historico de rotulo, gating de
+    vinculo (sem confirmacao, estado invalido, link inexistente).
+  8.2 VIVOS (Bearer tecnico, sinteticos removidos apos): biblioteca
+    (ocr-completed estendido), rotulo criado/renomeado/buscado, detalhe,
+    historico, job projetado com fields, imagem 200 image/jpeg 843 KB,
+    401 sem token, 404 job inexistente. Falha inicial propria do script
+    (URL sem /files/) corrigida; o mesmo erro existia no modal e foi
+    corrigido antes de qualquer uso (achado documentado na secao 9).
+  8.3 NAVEGADOR (Playwright + Chromium, CA isolada, sem credenciais): 9/9
+    login 5080/3443 (200, campos, hint), gate /admin/registry sem sessao
+    (401 login_required, sem vazamento), console sem erros inesperados
+    (apenas 401 de probes de autenticacao, comportamento esperado).
+    Fluxo autenticado completo (modal, rename, vinculo) NAO testado em
+    navegador por exigir senha humana — pendencia P1 (testes de API cobrem
+    os mesmos endpoints).
+  8.4 REGRESSAO: cadastro PF/PJ, busca, edicao, historico, auth/sessoes,
+    RBAC, OCR, revisoes, DOCX (contratos intactos), jobs, Core, RAG, Mem0,
+    Qdrant, Ollama, Caddy, portas 3000/3443/5080 (login 200), logout intacto.
+    0 falhas systemd, 9 containers, hardening 1024, contas inalteradas.
+
+================================================================================
+9. INCIDENTES
+================================================================================
+
+  I1 — URL de imagem sem /files/ no modal (RESOLVIDO, pre-uso): o codigo novo
+    montava /documents/ocr/<job>/<image>, mas a rota exige
+    /documents/ocr/<job>/files/<image>. Detectado por teste vivo (404) antes
+    de qualquer usuario usar; corrigido e revalidado (200 image/jpeg).
+  I2 — await em arrow nao-async (RESOLVIDO): node --check acusou; corrigido
+    para async; revalidado.
+  I3 — linha orfa do handler antigo (RESOLVIDO): removida; validacao completa.
+  I4 — expectativa errada no teste novo (RESOLVIDO): fixture usa REVIEWED;
+    teste corrigido, codigo intacto.
+  I5 — wait_for_url sem navegacao (harness; RESOLVIDO): trocado por assert de
+    URL + polling.
+  I6 — wait_for_function bloqueado pelo CSP (harness; RESOLVIDO com polling;
+    evidencia a favor do CSP restritivo do app).
+  I7 — expectativa de redirect no gate (harness; RESOLVIDO): o app retorna
+    401 JSON (igual ao /admin/users) — comportamento correto confirmado.
+  I8 — servidor de teste orfao de execucao falha (RESOLVIDO): kill + /tmp limpo.
+
+================================================================================
+10. PENDENCIAS
+================================================================================
+
+  P1 Fluxo autenticado completo em navegador (modal, rename, vinculo, DOCX)
+     requer senha humana — nao executado; endpoints cobertos por API.
+  P2 Validacao visual da Biblioteca no Chrome do Windows (cards, modal,
+     imagens, responsivo, teclado).
+  P3 DOCX com rotulo de ponta a ponta requer documento com revisao aprovada —
+     o seletor exibe nomes; a geracao segue exigindo aprovacoes.
+
+================================================================================
+11. ESTADO FINAL
+================================================================================
+
+  Servicos: davy-jones/caddy active, 0 falhas, 9 containers, hardening 1024.
+  Tabelas registry_*: 7 criadas, 0 linhas em producao (sinteticos removidos).
+  Contas: tlandskron ADMIN e tiago.adv USER, ativas e inalteradas.
+
+CLASSIFICACAO FINAL: C2_DOC_UX_R1_COMPLETE
+
+================================================================================
+FIM — MEDUSA-C2-DOC-UX-R1
+================================================================================

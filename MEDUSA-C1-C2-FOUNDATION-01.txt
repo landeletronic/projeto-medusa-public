@@ -1,0 +1,209 @@
+================================================================================
+MEDUSA-C1-C2-FOUNDATION-01 — IMPLEMENTACAO DO CADASTRO UNIVERSAL
+================================================================================
+
+Projeto ....: Caribbean Pirates GPT — Davy-Jones + Medusa
+Servidor ....: medusa (Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic)
+Interface ...: https://medusa.escritorio.local:5080
+Data ........: 2026-10-14, 20:42 - 21:12 (-03:00)
+Executor ....: tlandskron (uid=1000), sudo NOPASSWD
+Base ........: MEDUSA-C1-AUDIT + MEDUSA-C1-ARCHITECTURE (gates aprovados)
+
+CLASSIFICACAO FINAL: C1_C2_FOUNDATION_COMPLETE
+
+Rollback: NAO EXECUTADO. Nenhuma regressao, nenhuma perda de dados.
+Nenhuma pessoa real cadastrada. Nenhuma credencial humana testada.
+Nenhum segredo neste relatorio.
+
+================================================================================
+1. RESULTADO DA AUDITORIA (resumo)
+================================================================================
+
+  Armazenamento relacional efetivo: SQLite jobs.sqlite3 (WAL, BEGIN IMMEDIATE,
+  migrate() aditiva). PostgreSQL existe mas esta vazio (0 tabelas) e sem nenhum
+  uso no codigo — rejeitado. Qdrant e vetorial (sem PII por regra do projeto).
+  Escolha: SQLite, tabelas registry_*, mesma concorrencia e backup do codigo.
+  Nomes amigaveis viaveis sem tocar identidade tecnica (document_id estavel,
+  hashes e manifestos intactos; arquivos nunca renomeados). DOCX: seletor
+  amigavel como camada de interface, contrato validate_selection intacto.
+  Usuarios (login) vs entidades (cadastro): separados por construcao.
+
+================================================================================
+2. BANCO RELACIONAL E JUSTIFICATIVA
+================================================================================
+
+  SQLite /home/tlandskron/davy-jones/data/jobs.sqlite3 (600, dir 700).
+  Tabelas criadas (7, todas vazias em producao apos limpeza dos testes):
+    registry_persons, registry_identifiers, registry_roles,
+    registry_person_history, registry_doc_labels, registry_doc_label_history,
+    registry_doc_person_links (+ 4 indices).
+  Migracao: migrate_registry() — CREATE TABLE/INDEX IF NOT EXISTS em
+  BEGIN IMMEDIATE, chamada no Registry.__init__ (padrao HumanAuth/migrate).
+  Idempotente (testada por reexecucao). Sem ALTER/DROP. Sem FK declaradas
+  (padrao do codigo; integridade por aplicacao + UNIQUE).
+  Justificativa: consistencia, backup em arquivo unico (API sqlite3 backup,
+  WAL-safe), concorrencia identica ao codigo, zero dependencias novas.
+
+================================================================================
+3. MODELO DE ENTIDADES CRIADO
+================================================================================
+
+  PERSON (id uuid4 hex, kind PF|PJ, display/legal/social names, status
+  ACTIVE|INACTIVE, created/updated; kind imutavel; sem delete fisico).
+  IDENTIFIER (tipo CPF|CNPJ|RG|PASSPORT|OTHER, valor canonico, UNIQUE global;
+  CPF/CNPJ: so digitos + mod11; sem CPF/CNPJ permitido).
+  ROLE (CLIENT|COUNTERPARTY|LAWYER|REPRESENTATIVE|WITNESS|EXPERT|OTHER por
+  pessoa + contexto; escrita inicial limitada a CLIENT; UNIQUE tripla).
+  PERSON_HISTORY (op, before/after JSON, ator, ip).
+  DOC_LABEL (document_id tecnico UNIQUE, job_id origem, friendly_name 1..120,
+  doc_type, origin, estados; historico de rotulos).
+  DOC_LINK (doc_label_id + person_id UNIQUE, state CONFIRMED|PENDING|DISPUTED;
+  exige confirmacao humana explicita; rotulo previo obrigatorio).
+  Dossie/processo: modelado conceitualmente, NAO implementado (futuro).
+
+================================================================================
+4. TABELAS E RELACIONAMENTOS IMPLEMENTADOS
+================================================================================
+
+  Ver secao 2 (7 tabelas + 4 indices). Cardinalidades: pessoa 1-n
+  identificadores/papeis/historico; rotulo 1-1 documento; rotulo n-n pessoas
+  via links com estado. Nenhum vinculo automatico por nome/OCR em nenhum ponto.
+
+================================================================================
+5. FUNCIONALIDADES DE CADASTRO DISPONIVEIS
+================================================================================
+
+  Pagina: https://medusa.escritorio.local:5080/admin/registry (ADMIN, via menu
+  lateral → Administração → Cadastro; menu oculto para USER).
+  API (todas ADMIN-only — human_admin no proxy, Bearer tecnico no loopback):
+    GET    /registry/persons?q=&kind=&role=&limit=&offset=
+    POST   /registry/persons (201; roles iniciais so CLIENT)
+    GET    /registry/persons/<id> (com identifiers, roles, is_client)
+    POST   /registry/persons/<id> {action: UPDATE|SET_STATUS|ADD_IDENTIFIER|ADD_ROLE}
+    GET    /registry/persons/<id>/history
+    GET    /registry/documents?q=&doc_type=&review_state=
+    POST   /registry/documents/label {document_id, friendly_name} (upsert + historico)
+    GET    /registry/documents/<document_id> (rotulo + vinculos + review live)
+    POST   /registry/documents/<id>/links {person_id, state, confirm:true}
+    POST   /registry/links/<id> {action: SET_STATE, state}
+    GET    /registry/documents/ocr-completed (jobs OCR succeeded + rotulos)
+  UI: busca/criacao/detalhe/edicao/historico/papeis; rotulos; vinculos com
+  confirmacao explicita; lista OCR de referencia. Identificadores internos
+  (uuid/job IDs) aparecem apenas como texto tecnico, nunca como titulo.
+
+================================================================================
+6. PESQUISA POR NOMES AMIGAVEIS
+================================================================================
+
+  GET /registry/documents?q= (LIKE escapado, minimo 2 chars) sobre
+  friendly_name; filtros doc_type/review_state (review lido ao vivo do job).
+  Pessoas: busca por display/legal/social (LIKE escapado). Sem FTS e sem
+  indice vetorial (proposital — sem PII no Qdrant).
+
+================================================================================
+7. INTEGRACAO COM OCR E DOCX
+================================================================================
+
+  OCR: rotulo associado por document_id (uuid estavel); existencia validada
+  via jobs ou manifest.json; hash/conteudo/proveniencia/revisoes intactos.
+  DOCX: datalist existente passa a exibir o nome amigavel quando houver
+  (fallback identico ao anterior quando nao houver ou sem permissao; contrato
+  validate_selection/generate INALTERADO — a UI continua submetendo job IDs).
+  Revisoes humanas obrigatorias preservadas. Templates intactos.
+
+================================================================================
+8. REGRAS DE PERMISSOES
+================================================================================
+
+  ADMIN-only em todas as rotas (verificado ao vivo: ADMIN 200/201, USER 403,
+  sem token 401, pagina /admin/registry 200/403). USER nao ganha nada novo.
+  Menu Cadastro oculto para USER (presentacional; servidor e autoridade).
+  PENDENCIA: leitura USER futura exige ACL por registro — fora do escopo.
+  Pessoa cadastrada NAO vira usuario (sem password_hash/sessao; testado).
+
+================================================================================
+9. BACKUPS E RECUPERACAO
+================================================================================
+
+  Diretorio: /home/tlandskron/backups/c1-c2-foundation-20261014-204210 (700).
+  jobs.sqlite3.bak via API sqlite3 backup (WAL-safe; jobs=282 users=2;
+  recuperabilidade verificada por leitura). Codigo copiado + SHA-256.
+  rollback.sh: restaura codigo, restart, verifica (tabelas novas ficam
+  inertes; registros da janela sao preservados — sem overwrite de banco).
+  Rollback NAO executado. Nenhum RECOVERY_MANUAL_REVIEW_REQUIRED.
+
+================================================================================
+10. RESULTADOS DOS TESTES
+================================================================================
+
+  10.1 UNITARIOS ISOLADOS (tests/test_registry.py, DB temporario): 19/19 OK
+    PF, PJ, busca, edicao, historico, homonimos (2 registros distintos),
+    sem CPF, duplicado-sem-fusao (409), USER/ADMIN (via RBAC abaixo),
+    label, rename, tech-id preservado, links, idempotencia, CPF/CNPJ,
+    sem-criacao-de-login.
+  10.2 VIVOS LOOPBACK (Bearer tecnico, dados sinteticos, depois removidos):
+    25/25 OK — CRUD completo, 400/404/409, label+rename+busca em documento
+    OCR real (19 succeeded em prod), vinculo CONFIRMED->DISPUTED, duplicado
+    409, ocr-completed com rotulo, /health /ready /rag/status /memory/status
+    200, sem token 401.
+  10.3 RBAC EM SERVIDOR ISOLADO (porta 18766, DB temporario, sessoes reais):
+    11/11 — login ADMIN/USER, ADMIN lista/cria/pagina 200, USER lista/cria/
+    pagina 403. (Servidor orfao de uma execucao falha removido; /tmp limpo.)
+  10.4 REGRESSAO: TLS 5080/3443/3000 (login 200, ssl_verify=0), /auth/me 401,
+    Origin estranha 403, 0 falhas systemd, 9 containers, hardening 1024,
+    layout/responsivo/teclado preservados (so CSS/JS aditivo em index.html).
+  10.5 PII: grep por CPF/CNPJ formatados nos logs do projeto: apenas o numero
+    de teste documentado no relatorio de arquitetura (sequencia de teste, nao
+    dado real) — removido por rigor; um log M4.12 de setembro contem numeros
+    pre-existentes de outra etapa (fora do escopo, registrado).
+  10.6 DOCX anterior, fila/jobs, historico, RAG, Mem0, sessoes: sem alteracao
+    (contratos intactos; jobs/auth inalterados; limpeza removeu 100% das
+    linhas sinteticas: 7 tabelas com 0 linhas em producao).
+
+================================================================================
+11. COMPATIBILIDADE E RESERVAS FUTURAS
+================================================================================
+
+  Compativel: mesma pagina inicial/menu das etapas R1-R3 (entrada adicionada
+  no grupo Administracao), mesmas portas/TLS, mesmos contratos OCR/DOCX/RAG.
+  Reservado: dossie/processo, papeis nao-CLIENT, leitura USER, FTS, merge de
+  duplicados, importacao OCR automatica, revogacao/CRL, ACL por registro.
+
+================================================================================
+12. INCIDENTES
+================================================================================
+
+  I1 — detail() dentro da transacao via testes (RESOLVIDO): create/update
+    chamavam detail() antes do commit, invisivel na mesma conexao. Corrigido
+    movendo o retorno para fora do bloco; 19/19 apos.
+  I2 — helpers de teste com PK fixa (RESOLVIDO): sequenciador para job IDs.
+  I3 — tabela auth_users ausente no teste de nao-login (RESOLVIDO): DDL minima
+    no teste.
+  I4 — servidor de teste sem mem0.json valido (RESOLVIDO): config de teste
+    gerada a partir da producao com history isolado.
+  I5 — CSRF em POSTs do harness RBAC (RESOLVIDO): token obtido via /auth/me.
+  I6 — pagina HTML quebrando parse JSON do harness (RESOLVIDO): modo raw.
+  I7 — servidor orfao da execucao falha (RESOLVIDO): kill + /tmp limpo.
+  I8 — chmod 755 temporario no dir de backup para leitura (RESOLVIDO):
+    restaurado para 700 e verificado.
+
+================================================================================
+13. CLASSIFICACAO E ENCERRAMENTO
+================================================================================
+
+  Nao e C1_AUDIT_COMPLETE_IMPLEMENTATION_BLOCKED (gates aprovados).
+  Nao e PARTIAL: cadastro + rotulos + vinculos entregues e testados; DOCX com
+  seletor amigavel funcional. Nenhuma pendencia opcional ficou aberta dentro
+  do escopo (as reservas sao de etapas futuras, nao desta).
+
+  CLASSIFICACAO FINAL: C1_C2_FOUNDATION_COMPLETE
+
+  Arquivos: app/registry.py (novo), app/registry_views.py (novo),
+  app/davy.py (rotas+wiring), app/index.html (menu+seletor),
+  tests/test_registry.py (novo), tests/rbac_registry_live_check.py (novo).
+  Encerrado apos a fundacao. Sem gestao processual, financeiro ou migracao
+  de dados. Proxima acao: validacao da pagina no navegador do administrador.
+
+================================================================================
+FIM — MEDUSA-C1-C2-FOUNDATION-01
+================================================================================

@@ -1,0 +1,16 @@
+# =============================================================================
+# .gitignore - o que NUNCA entra no controle de versao
+#
+# Regra: segredo nao se versiona; artefato de sistema/SO nao se versiona.
+# O conteudo do projeto (relatorios, configs, fontes) entra todo.
+# =============================================================================
+
+# --- Sistema / SO -------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Estado local do agente ---------------------------------------------------
+_*
+.vscode/
+.idea/

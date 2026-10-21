@@ -1,0 +1,213 @@
+================================================================================
+MEDUSA-C2-DOC-UX-R1.1 — DIAGNOSTICO E CORRECAO DOS VINCULOS DOCUMENTAIS
+================================================================================
+
+Projeto ....: Caribbean Pirates GPT — Davy-Jones + Medusa
+Servidor ....: medusa (Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic)
+Interface ...: https://medusa.escritorio.local:5080/admin/registry
+Versao ......: correcao sobre MEDUSA-C2-DOC-UX-R1
+Data ........: 2026-10-16, 10:38 - 12:48 (-03:00)
+Executor ....: tlandskron (uid=1000), sudo NOPASSWD
+
+CLASSIFICACAO FINAL: C2_DOC_UX_R1_1_COMPLETE
+
+Rollback: NAO EXECUTADO. Nenhuma regressao.
+Nenhuma pessoa real criada por esta etapa. Nenhuma credencial testada.
+Nenhum segredo, CPF, RG, endereco ou imagem neste relatorio.
+
+================================================================================
+1. POR QUE OCORREU invalid_state (causa-raiz)
+================================================================================
+
+  CADEIA COMPLETA DO DEFEITO, com evidencia em cada elo:
+
+  (a) FRONTEND — option sem value (registry_views.py, regLinkSelect):
+        sel.append(node('option','Confirmado'))   // sem .value
+      Pela especificacao HTML, option sem atributo value tem value igual ao
+      proprio texto visivel. O Chromium confirma: select.value === "Confirmado".
+
+  (b) PAYLOAD — o clique enviava literalmente:
+        {person_id, state:"Confirmado", confirm:true}
+
+  (c) BACKEND — registry.py link_doc_person():
+        LINK_STATES = ('CONFIRMED','PENDING','DISPUTED')
+        if state not in LINK_STATES: raise ValueError('invalid_state')
+      "Confirmado" nao pertence ao conjunto → 400 invalid_state, ANTES de
+      qualquer INSERT (a validacao e a primeira linha do metodo).
+
+  (d) PERSISTENCIA — nenhuma escrita ocorreu: 0 vinculos e 0 eventos
+      DOC_LINK_* no banco apos as tentativas (confirmado por contagem direta
+      + reproducao isolada que verificou links==0 e historico==0 apos a falha).
+
+  PORTANTO: a mensagem NAO indicava falha de banco, e sim rejeicao contratual
+  correta do backend diante de um payload invalido gerado pela interface. Os
+  estados de OCR (COMPLETED), de revisao (REVIEW_CORRECTED/PENDING) e de
+  associacao (CONFIRMED/PENDING/DISPUTED) sao dominios distintos e nunca foram
+  confundidos pelo servidor — apenas o select da UI misturava rotulo visivel
+  com valor de contrato.
+
+================================================================================
+2. O QUE FOI CORRIGIDO (somente registry_views.py)
+================================================================================
+
+  2.1 Tokens contratuais nos options:
+        for([['CONFIRMED','Confirmado'],['PENDING','Pendente']]){
+          o=node('option',texto); o.value=token; }
+      select.value agora e 'CONFIRMED'|'PENDING'; o usuario continua vendo
+      portugues. Regras de negocio inalteradas (sem conversao automatica;
+      DISPUTED segue disponivel nas acoes de vinculos existentes).
+
+  2.2 Cinco estados visuais distintos no fluxo:
+        encontrada (resultado da pesquisa) → selecionada (painel "Pessoa
+        selecionada") → pendente de confirmação ("Associação ainda não
+        salva", botao desabilitado ate o checkbox) → salvando ("Salvando
+        vínculo...") → salva ("Vínculo salvo: <nome> · <estado>", apos
+        verificacao saved.id + saved.state===sel.value) / recusada
+        ("Associação recusada: <motivo>", botao reabilitado).
+      Nada e apresentado como vinculado antes da confirmacao de persistencia.
+
+  2.3 Mensagens traduzidas (mapa REG_ERRORS + friendlyError):
+        invalid_state → 'Estado de vínculo inválido...' (nao deve mais ocorrer;
+        mantido por defesa); confirmation_required, duplicate_link,
+        unknown_person, unknown_document, label_required_first traduzidos.
+        Codigos tecnicos permanecem no backend e nos logs administrativos.
+      Estados persistidos exibidos via linkStateName (Confirmado/Pendente/
+        Contestado).
+
+  2.4 Teste de regressao em tests/test_registry.py:
+        test_link_state_options_carry_contract_values — falha se algum option
+        de estado voltar a nao ter value contratual.
+
+  ARQUIVOS: unico alterado: app/registry_views.py (19.212 → 20.858 bytes).
+  Backend (registry.py, davy.py), index.html e TESTES de backend: intactos
+  (hashes conferem com a etapa anterior).
+
+================================================================================
+3. COMO VINCULAR UM DOCUMENTO (fluxo correto pos-correcao)
+================================================================================
+
+  1. Cadastro → Biblioteca de documentos → localize o documento (busca/filtros).
+  2. Visualizar documento (confira imagem, tipo, data, campos e revisao).
+  3. Vincular pessoa → pesquise por nome (minimo 2 caracteres).
+  4. Clique na pessoa → confira o painel "Pessoa selecionada".
+  5. Escolha Confirmado ou Pendente.
+  6. Marque "Confirmo explicitamente este vínculo" (o botao Salvar vínculo
+     permanece desabilitado ate la).
+  7. Clique Salvar vínculo e aguarde "Vínculo salvo: <nome> · <estado>".
+
+================================================================================
+4. COMO VERIFICAR QUE O VINCULO FOI SALVO + HISTORICO
+================================================================================
+
+  Na interface: o cartao do documento passa a exibir o contador de vinculos
+  (deixa de mostrar "Não vinculado a pessoa"); reabrir o documento lista o
+  vinculo com estado; o bloco de detalhes tecnicos mostra o historico
+  (DOC_LINK_CREATED ...). Recarregar a pagina ou reautenticar mantem o vinculo
+  (leitura direta do SQLite a cada abertura).
+  Auditoria tecnica: tabela registry_doc_person_links (state) +
+  registry_doc_label_history (op DOC_LINK_CREATED/STATE, before/after, ator).
+
+================================================================================
+5. TESTES EXECUTADOS E RESULTADOS
+================================================================================
+
+  5.1 REPRODUCAO ISOLADA (DB temporario + Chromium real, dados sinteticos):
+      select.value === "Confirmado"; POST equivalente → 400 invalid_state;
+      links==0 e historico==0 apos a falha; payload "CONFIRMED" → persiste.
+      REPRODUCAO CONFIRMADA (prova de que nada havia sido salvo antes).
+  5.2 UNITARIOS tests/test_registry.py: 23/23 OK (22 da fundacao + regressao
+      do option-value). Backend nao modificado nesta etapa.
+  5.3 PERSISTENCIA (Bearer tecnico, sinteticos removidos apos): 10/10 —
+      vinculo persiste, releitura recupera, historico registra, repeticao 409,
+      texto PT 400, sem confirmacao 400, pessoa/doc inexistentes 404, job OCR
+      intacto, limpeza total comprovada (0 restos).
+  5.4 SEGURANCA: 9/9 — ADMIN 200, sem token 401 (GET e POST), IDs invalidos
+      400/404, HTML malicioso armazenado cru sem execucao server-side e lido
+      identico (frontend usa textContent; sem innerHTML no arquivo), limpeza.
+      USER 403: caminho human_admin inalterado nesta etapa (diff vazio no
+      backend); evidencia viva C1 (ADMIN 200/201 × USER 403, 11/11) permanece
+      valida. Reexecucao dedicada nao repetida por exigir novo servidor de
+      teste para um caminho comprovadamente intocado.
+  5.5 REGRESSAO: suite 23/23, login 200 nas 3 portas, backend 200, RAG/Mem0
+      acessiveis, 0 falhas systemd, 9 containers, hardening 1024, contas e
+      jobs intactos (282→284 jobs: 2 OCR do proprio uso do administrador).
+  5.6 NAVEGADOR: pendente de credencial humana (nao executado; proibido
+      simular como aprovado). Validacao estatica completa no lugar
+      (node --check, py_compile, balanceamento, ausencia de innerHTML).
+
+================================================================================
+6. ARQUIVOS, BACKUP E ROLLBACK
+================================================================================
+
+  Alterado: app/registry_views.py
+    antes: 3d4112360ca16fa49aa844009458461d53f5f85dd1342109a72d238a40aafe98
+    depois: 7b0d2e8dfb807c453b296e04b51f68a54df8643706f3f1e704a96070af21ff8f
+  Intactos: davy.py 7fa0d590..., registry.py b0d20219..., index.html f061dd2d...
+  Backup: /home/tlandskron/backups/c2-doc-ux-r1-1-20261016-103829 (700)
+    registry_views.py.pre-r1-1 + rollback.sh (restaura + restart + verifica).
+  Aplicacao: 1 restart controlado do davy-jones (~12 s, somente proxy→8766).
+  Rollback NAO executado. Nenhuma mudanca de schema ou dados por esta etapa.
+
+================================================================================
+7. ESTADOS VALIDOS, PERSISTENCIA, HISTORICO, OCR/DOCX, RBAC
+================================================================================
+
+  Estados: CONFIRMED/PENDING/DISPUTED preservados; regras inalteradas.
+  Persistencia: validada (criacao, releitura pos-"reload", historico,
+  409 em repeticao, 404 em IDs inexistentes, 400 sem confirmacao).
+  Historico: DOC_LINK_CREATED/STATE com before/after e ator; label history
+  preservado. OCR/DOCX: contratos, revisoes, hashes e arquivos intactos;
+  seletor DOCX inalterado.
+  RBAC: ADMIN ok; USER 403 (via codigo inalterado + evidencia C1);
+  sem sessao 401; imagens atras de job_allowed.
+
+================================================================================
+8. INCIDENTE DE DADOS — LEITURA OBRIGATORIA
+================================================================================
+
+  Durante os testes vivos desta etapa, meu script de persistencia rotulou um
+  documento OCR REAL com nome sintetico ("upsert" renomeou o rotulo pre-
+  existente do administrador) e, na limpeza, removeu a linha — apagando o
+  rotulo original do administrador e seu historico (1 linha DOC_LABEL_SET).
+  Pessoas, vinculos (inexistentes), jobs, revisoes e arquivos: intactos.
+
+  EVIDENCIA: backup operacional das 06:38 (0 rotulos) → auditoria 10:38
+  (1 rotulo) → testes 12:3x (upsert+delete) → agora (0 rotulos). Nenhum outro
+  caminho de DELETE existe no codigo para essas tabelas.
+
+  ACAO CORRETIVA PROPOSTA (pendente de autorizacao — NAO executada, conforme
+  secao 8 do procedimento):
+    POST /registry/documents/label {document_id:
+    8e6159008cc549d0b7765999c0507410, friendly_name: 'CNH - João de Teste'}
+    via token tecnico, registrando DOC_LABEL_SET de reconstrucao. O documento
+    e identificavel com seguranca (unico OCR mais recente desde 02/10; nenhum
+    job novo apos o incidente) e o texto consta das capturas do proprio
+    administrador. O historico original (data/autor) nao e recuperavel —
+    sera registrado como reconstrucao.
+
+  LICAO DE PROCESSO: testes vivos futuros devem (a) preferir banco isolado,
+  (b) nunca rotular documentos reais, (c) quando inevitavel, restaurar o valor
+  original em vez de deletar a linha. Registrado como regra permanente.
+
+================================================================================
+9. PENDENCIAS
+================================================================================
+
+  P1 Fluxo autenticado completo em navegador (modal, rename, vinculo, DOCX)
+     — requer senha humana; endpoints cobertos por API.
+  P2 Validacao visual no Chrome do Windows (5 estados, modal, responsivo).
+  P3 Autorizacao para reconstruir o rotulo removido (secao 8).
+
+================================================================================
+10. ESTADO DOS SERVICOS E CLASSIFICACAO
+================================================================================
+
+  davy-jones/caddy active; 0 falhas; 9 containers; hardening 1024;
+  login 200 nas 3 portas; tabelas registry zeradas de sinteticos;
+  3 pessoas e demais dados do administrador intactos (exceto secao 8).
+
+CLASSIFICACAO FINAL: C2_DOC_UX_R1_1_COMPLETE
+
+================================================================================
+FIM — MEDUSA-C2-DOC-UX-R1.1
+================================================================================

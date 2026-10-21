@@ -1,0 +1,613 @@
+================================================================================
+MEDUSA-NET-HARDEN-A01
+CORRECAO CONTROLADA DO PARAMETRO net.ipv4.ip_unprivileged_port_start
+================================================================================
+
+Projeto .........: Caribbean Pirates GPT — Davy-Jones + Medusa
+Servidor ........: medusa
+Sistema .........: Ubuntu Server 26.04.1 LTS
+Kernel ..........: 7.0.0-38-generic
+Boot ............: 2026-10-09 22:25:20 (-03:00)
+Boot ID .........: e165b5e5-c634-4e26-8d6e-7234355e6368
+Executor ........: tlandskron (uid=1000), sudo NOPASSWD disponivel
+Janela ...........: 2026-10-14 12:48 - 12:56 (-03:00)
+Parametro .......: net.ipv4.ip_unprivileged_port_start
+Valor anterior ..: 0
+Valor atual ....: 1024
+
+CLASSIFICACAO FINAL: HARDENING_COMPLETE
+
+Rollback: NAO EXECUTADO (nao houve falha nem regressao).
+Proibicoes respeitadas: nenhuma VM reiniciada, nenhum servico reiniciado,
+nenhum firewall/porta/certificado/autenticacao/container alterado, nenhum pacote
+instalado ou removido, nenhuma Etapa B ou C iniciada.
+
+--------------------------------------------------------------------------------
+1. ETAPA A1 — INVENTARIO INICIAL
+--------------------------------------------------------------------------------
+
+IDENTIDADE
+  Data/hora ......: 2026-10-14T12:48:56-03:00 (inicio da auditoria)
+  Hostname .......: medusa
+  Ubuntu .........: Ubuntu 26.04.1 LTS
+  Kernel .........: 7.0.0-38-generic
+  Executor .......: tlandskron (uid=1000)
+  Boot ...........: 2026-10-09 22:25:20 -03:00 (boot_id e165b5e5...)
+
+PARAMETRO — ESTADO INICIAL
+  sysctl net.ipv4.ip_unprivileged_port_start ....... = 0
+  cat /proc/sys/net/ipv4/ip_unprivileged_port_start . = 0
+  mtime do /proc/sys ................................ 2026-10-09 22:41:59.280693321 -0300
+  owner/modo ....................................... root:root 644
+
+ORIGEM DO VALOR 0 — DIAGNOSTICO
+  Comparacao com o horario de boot:
+    boot_time  = 2026-10-09 22:25:20
+    param_mtime = 2026-10-09 22:41:59   (+16 min 39 s DEPOIS do boot)
+
+  CONCLUSAO: o valor 0 NAO veio de arquivo de configuracao. Um parametro
+  aplicado pelo systemd-sysctl no boot teria mtime igual ou anterior ao boot.
+  O valor foi aplicado MANUALMENTE, em tempo de execucao, 16 minutos apos o
+  boot — o que corresponde exatamente ao teste de bind de porta 6000 executado
+  durante MEDUSA-PORT-5080-DIAG-01.
+
+  Confirmacoes adicionais:
+    - grep do parametro em TODOS os arquivos sysctl do sistema:
+      NENHUMA DEFINICAO PERSISTENTE ENCONTRADA
+    - /etc/sysctl.conf: AUSENTE no sistema
+    - systemd-sysctl --cat-config: nao contem o parametro
+    - Nenhum unit systemd executa sysctl -w / --system para o parametro
+    - Nenhuma entrada em .bash_history
+
+  Portanto: valor 0 = Override temporario de runtime, sem persistencia.
+
+CONFIGURACAO PERSISTENTE EXISTENTE (relevante)
+  /etc/sysctl.conf ........................... AUSENTE
+  /etc/sysctl.d/ ............................. existe
+    99-caribbean-pirates-redis.conf ........... vm.overcommit_memory = 1
+    README.sysctl ............................. (documentacao)
+  /run/sysctl.d/ .............................. AUSENTE
+  /usr/local/lib/sysctl.d/ .................... AUSENTE
+  /usr/lib/sysctl.d/ .......................... 11 arquivos vendor (10-, 50-, 55-)
+  /lib/sysctl.d/ .............................. MESMO diretorio (inode 35128552)
+  /usr/lib/sysctl.d/50-default.conf .......... NAO menciona o parametro
+
+PRECEDENCIA (sysctl.d(5))
+  1) /etc/sysctl.d/*.conf  e  /run/sysctl.d/*.conf   [admin]
+  2) /usr/local/lib/sysctl.d/*.conf
+  3) /usr/lib/sysctl.d/*.conf e /lib/sysctl.d/*.conf [vendor]
+  4) /etc/sysctl.conf (por ultimo)
+  /lib e /usr/lib sao o mesmo diretorio (inode 35128552) — sem duplicacao real.
+  systemd-sysctl.service: static, ACTIVE, aplicado no boot.
+
+ESTADO INICIAL — PORTAS E SERVICOS
+  Listeners em escuta ............................ 26
+  Containers em execucao ......................... 9
+  Servicos running ............................... 18
+  Falhas de servico .............................. 0 (system) / 0 (user)
+
+ESTADO INICIAL — PINGS FUNCIONAIS
+  caddy_active ......... active
+  davy_8766 ............ 200
+  core_8765 ............ 200
+  rag_8767 ............. 401  (exige token — comportamento correto)
+  grafana .............. 302
+  prometheus ........... 302
+  qdrant ............... 200
+  ollama ............... 200
+  searxng .............. 200
+  docling .............. 404  (sem rota na raiz)
+  http_3000 ............ 302
+  https_3443_cacert .... 302  (validado com a CA root via --cacert)
+
+--------------------------------------------------------------------------------
+2. ETAPA A2 — ANALISE DE DEPENDENCIAS
+--------------------------------------------------------------------------------
+
+RESULTADO GLOBAL: NENHUMA DEPENDENCIA. Sem BLOCKED_DEPENDENCY.
+
+2.1 PORTAS PRIVILEGADAS (<1024) EM USO
+  Varredura de todos os listeners: NENHUM em porta <1024 exceto as de sistema.
+
+  Porta | Processo      | Servico               | Usuario         | CAP_BIND
+  ------+---------------+-----------------------+-----------------+----------
+    22  | sshd          | ssh.socket            | root            | SIM
+    53  | systemd-resolve| systemd-resolved      | systemd-resolve | SIM
+   323  | chronyd       | chrony.service        | _chrony         | SIM
+
+  Todas as tres sao servicos DE SISTEMA, executados por root ou por usuario
+  dedicado, com CAP_NET_BIND_SERVICE efetivo. Nenhuma depende do parametro.
+
+  Portas de aplicacao (3000, 3443, 5001, 6333, 8081, 8765, 8766, 8767, 9090,
+  11434) sao todas >=1024 e portanto inalteradas por esta correcao.
+
+2.2 CAPACIDADES EFETIVAS POR PROCESSO
+  Decodificacao do bit 10 (CAP_NET_BIND_SERVICE):
+
+  Processo          | PID  | Usuario         | CapEff              | CAP_BIND
+  ------------------+------+-----------------+---------------------+---------
+  sshd              | 7236 | root            | 000001ffffffffff    | SIM
+  tailscaled        | 4837 | root            | 000001ffffffffff    | SIM
+  systemd-resolved  | 800  | systemd-resolve | 0000000000002500    | SIM
+  chronyd           | 4885 | _chrony         | 0000000002000400    | SIM
+  caddy             | 5138 | tlandskron      | 0000000000000000    | nao
+  medusa-core       | 5134 | tlandskron      | 0000000000000000    | nao
+  rag-worker        | 5135 | tlandskron      | 0000000000000000    | nao
+  davy-jones        | 5136 | tlandskron      | 0000000000000000    | nao
+  docker-proxy      | 3756 et al | root       | (root, todas caps) | SIM
+
+  Os processos que rodam SEM CAP_NET_BIND_SERVICE (os 4 servicos de usuario)
+  escutam APENAS portas >=1024. Nenhum deles depende do parametro.
+
+2.3 AMBIENT / FILE CAPABILITIES
+  Nenhum binario possui filecap (getcap vazio para chronyd, systemd-resolved,
+  sshd, caddy, python3, docker-proxy).
+  AmbientCapabilities:
+    systemd-resolved ... cap_net_bind_service  (declarado no unit)
+    chrony ............ (nenhuma; usa CapPrm herdada)
+    medusa-caddy ...... NENHUMA
+    davy-jones ........ NENHUMA
+    medusa-core ....... NENHUMA
+    medusa-rag-worker . NENHUMA
+  Conclusao: os servicos de usuario nao possuem nem requesting nem possuindo
+  CAP_NET_BIND_SERVICE, e mesmo assim nao precisarão dela.
+
+2.4 ANALISE POR SERVICO EXPLICITAMENTE PEDIDA
+  Caddy ............... tlandskron, caps 0, escuta 3000/3443. Sem dependencia.
+  Docker .............. dockerd e docker-proxy rodam como root (todas as caps).
+                       Publica portas via 127.0.0.1. Sem dependencia.
+  Tailscale .......... tailscaled como root, caps completos. Sem dependencia.
+  SSH ................. sshd como root com caps completos; socket activation.
+                       Sem dependencia.
+  Davy-Jones .......... tlandskron, caps 0, escuta 8766. Sem dependencia.
+  Medusa Core ......... tlandskron, caps 0, escuta 8765. Sem dependencia.
+  RAG Worker .......... tlandskron, caps 0, escuta 8767. Sem dependencia.
+  Grafana ............. container (uid 472), porta interna 3000. Sem dependencia.
+  Prometheus .......... container (nobody), porta interna 9090. Sem dependencia.
+  Node Exporter ....... container (nobody), porta interna 9100. Sem dependencia.
+  Servicos systemd .... unico socket de rede em porta <1024 e o ssh.socket:22,
+                       atendido por sshd com caps completos.
+
+2.5 NAMESPACES (atencao solicitada)
+  O parametro e POR NAMESPACE DE REDE. Valores observados:
+
+    HOST (netns principal) ......... 0  -> sera 1024
+    obs-grafana ................... 0
+    obs-prometheus ................ 0
+    obs-node-exporter ............. 0
+    medusa-searxng ................ 0
+    medusa-docling ................ 0
+    infra-qdrant .................. 0
+    infra-redis ................... 0
+    infra-postgres ................ 0
+    u0137-ollama .................. 0
+
+  HERANCA: containers criados a partir de um netns com o valor 0 herdam 0.
+  Confirmado: obs-grafana foi criado em 2026-10-10T01:55:31Z, depois da mudanca
+  para 0 (2026-10-09 22:41:59). infra-postgres (19/09) tambem mostra 0 por
+  heranca de cadeia, pois seu netns foi criado a partir do namespace do host.
+
+  >>> Os valores internos dos containers NAO foram alterados por esta operacao.
+  O sysctl -w foi aplicado apenas ao namespace de rede do host.
+  Containers EXISTENTES mantem 0 ate serem recriados.
+  Containers NOVOS herdaverao 1024 apos esta correcao.
+
+  IMPACTO: NENHUM. Nenhum container declara porta interna <1024
+  (verificado em todos os 9: 9100, 3000, 9090, 8080/8081, 5001/8080, 6333/6334,
+  6379, 5432, 11434 — todos >=1024).
+
+2.6 SERVICOS QUE PODEM INICIAR FUTURAMENTE EM PORTA <1024
+  Unidades systemd com Port=/ListenStream= : apenas ssh.socket (22).
+  Containers: nenhuma porta interna <1024 declarada.
+  Nenhuma automacao ou script projeta uso futuro de portas <1024.
+
+  CRITERIO DE SEGURANCA APLICADO: nenhuma dependencia identificada que exija
+  o valor 0. A correcao pode prosseguir.
+
+--------------------------------------------------------------------------------
+3. ETAPA A3 — BACKUPS
+--------------------------------------------------------------------------------
+
+DIRETORIO DE BACKUP
+  /home/tlandskron/backups/net-harden-a01-20261014-125233
+  owner root:root, modo 700 (conteudo sensivel de configuracao)
+
+ESTADO PERSISTENTE ANTERIOR
+  /etc/sysctl.conf ....... AUSENTE
+  -> Nao havia arquivo a copiar. A ausencia foi registrada em
+     sysctl.conf.estado ("AUSENTE") para que o rollback saiba que o estado
+     original e a ausencia do arquivo, e nao um conteudo vazio.
+
+ARQUIVOS INVENTARIADOS E COM HASH
+  etc-sysctl.d.inventario  .... ls -la /etc/sysctl.d/ antes da alteracao
+  etc-sysctl.d.sha256 ....... SHA-256 de todos os .conf existentes antes
+  Conteudo do sha256 (antes):
+    (registrado em etc-sysctl.d.sha256; 2 arquivos: 99-caribbean-pirates-
+     redis.conf e README.sysctl)
+
+SNAPSHOTS
+  baseline.txt .............. identidade, boot_id, kernel, param_antes=0
+  ports_antes.txt ........... 26 listeners (ss -H -lntup)
+  servicos_antes.txt ........ servicos system e user com estado
+  containers_antes.txt ...... 9 containers com nome/status/portas
+  pings_antes_plain.txt ..... 12 pings de referencia
+  rollback.sh ............... procedimento de rollback (modo 700)
+
+METADADOS DO DIRETORIO
+  drwx------ 1 root root 4096 /home/tlandskron/backups/net-harden-a01-20261014-125233
+
+PROCEDIMENTO DE RESTAURACAO PREPARADO
+  /home/tlandskron/backups/net-harden-a01-20261014-125233/rollback.sh
+    1) sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+    2) rm /etc/sysctl.d/99-caribbean-pirates-privileged-ports.conf
+    3) verifica runtime e ausencia de /etc/sysctl.conf
+  Nao reinicia servico algum.
+
+--------------------------------------------------------------------------------
+4. ETAPA A4 — CORRECAO PERSISTENTE
+--------------------------------------------------------------------------------
+
+ARQUIVO CRIADO
+  /etc/sysctl.d/99-caribbean-pirates-privileged-ports.conf
+  owner .. root:root
+  modo .... 644
+  tamanho . 740 bytes
+  SHA-256 . 58f6767a64dbedcce5102bb52859fdd9eb315ea75768956883df4f69842452ff
+
+DECISAO DE LOCAL E NOME
+  Local: /etc/sysctl.d/ — precedencia ADMIN sobre vendor em sysctl.d(5).
+  Nome: 99-caribbean-pirates-privileged-ports.conf — o prefixo 99- garante que
+  a diretiva seja lida apos os arquivos vendor 50- e 55-, e segue a convencao
+  existente 99-caribbean-pirates-redis.conf do proprio projeto.
+  Alternativa descartada: /etc/sysctl.conf (nao existe no sistema e seria a
+  ultima opcao em precedencia,alpior para clareza).
+
+VERIFICACAO DE CONFLITO (previa a escrita)
+  grep do parametro em /etc/sysctl.d, /usr/lib/sysctl.d, /lib/sysctl.d:
+  NENHUMA definicao preexistente -> nenhuma sobrescrita possivel.
+
+ARQUIVOS EXISTENTES NAO MODIFICADOS
+  /etc/sysctl.d/99-caribbean-pirates-redis.conf .... intocado
+  /etc/sysctl.d/README.sysctl ..................... intocado
+  /usr/lib/sysctl.d/* (11 arquivos) ................ intocados
+  Confirmado por: sha256sum registrado antes e mtime inalterado depois.
+
+CONTEUDO GRAVADO
+  # MEDUSA-NET-HARDEN-A01
+  # Caribbean Pirates GPT - medusa
+  #
+  # Impede que processos sem privilegio (sem CAP_NET_BIND_SERVICE) tambem
+  # consigam abrir portas reservadas (<1024). O default do kernel Ubuntu e
+  # 1024; o valor 0 havia sido aplicado manualmente em 2026-10-09 durante um
+  # teste de bind de porta, sem registro em arquivo de configuracao.
+  #
+  # Impacto verificado em MEDUSA-NET-PORT-AUDIT-01:
+  #   - Nenhum processo nao-root do host escuta porta < 1024
+  #   - sshd, chronyd, systemd-resolved e tailscaled rodam com
+  #     CAP_NET_BIND_SERVICE e nao dependem deste parametro
+  #   - Nenhum container declara porta interna < 1024
+  #
+  # Precedencia: /etc/sysctl.d sobre /usr/lib/sysctl.d (sysctl.d(5))
+  net.ipv4.ip_unprivileged_port_start = 1024
+
+VALIDACAO DE SINTAXE SEM TOCAR NO RUNTIME
+  Execucao em namespace de rede descartavel:
+    sudo unshare --net -- sysctl -p /etc/sysctl.d/99-....conf
+    -> net.ipv4.ip_unprivileged_port_start = 1024
+    -> valor lido no netns isolado: 1024
+  O namespace foi destruido imediatamente. O runtime do host permaneceu em 0
+  durante a validacao (confirmado imediatamente apos).
+
+  systemd-sysctl --cat-config passa a exibir a diretiva no trecho de
+  /etc/sysctl.d/99-caribbean-pirates-privileged-ports.conf, confirmando que o
+  arquivo esta no caminho de leitura do mecanismo de boot.
+
+--------------------------------------------------------------------------------
+5. ETAPA A5 — APLICACAO EM RUNTIME
+--------------------------------------------------------------------------------
+
+COMANDO EXECUTADO (exclusivamente o parametro autorizado)
+  sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1024
+  exit_code = 0
+  Nao foi executado 'sysctl --system' (recarga global) nem qualquer outro
+  parametro. Nenhum servico foi reiniciado.
+
+CONFIRMACAO IMEDIATA
+  cat /proc/sys/net/ipv4/ip_unprivileged_port_start .... 1024
+  sysctl net.ipv4.ip_unprivileged_port_start .......... 1024
+  mtime do /proc/sys .................................. 2026-10-14 12:54:53.492530124
+  >>> VALOR CORRETO APLICADO <<<
+
+OUTROS PARAMETROS DE REDE — CONFERENCIA (inalterados)
+  net.ipv4.ip_forward .......................... 1
+  net.ipv4.conf.all.rp_filter .................. 2
+  net.ipv4.conf.default.rp_filter .............. 2
+  net.ipv4.conf.all.accept_redirects ........... 0
+  net.ipv6.conf.all.accept_redirects ........... 1
+  net.ipv4.icmp_echo_ignore_broadcasts ......... 1
+  net.core.default_qdisc ....................... fq_codel
+
+--------------------------------------------------------------------------------
+6. ETAPA A6 — TESTES DE REGRESSAO
+--------------------------------------------------------------------------------
+
+6.1 SERVICOS
+  Servico              | Estado   | Habilitado
+  ---------------------+----------+-----------
+  docker               | active   | enabled
+  containerd           | active   | enabled
+  tailscaled           | active   | enabled
+  ssh                  | active   | disabled (socket activation)
+  chrony               | active   | enabled
+  systemd-resolved     | active   | enabled
+  medusa-caddy         | active   | enabled
+  davy-jones           | active   | enabled
+  medusa-core          | active   | enabled
+  medusa-rag-worker    | active   | enabled
+
+  Falhas: system 0 | user 0
+
+6.2 PINGS FUNCIONAIS — DIFF ANTES vs DEPOIS
+  caddy_active ......... active  (identico)
+  davy_8766 ............ 200     (identico)
+  core_8765 ............ 200     (identico)
+  rag_8767 ............. 401     (identico)
+  grafana .............. 302     (identico)
+  prometheus ........... 302     (identico)
+  qdrant ............... 200     (identico)
+  ollama ............... 200     (identico)
+  searxng .............. 200     (identico)
+  docling .............. 404     (identico)
+  http_3000 ............ 302     (identico)
+  https_3443_cacert .... 302     (identico)
+  DIFF: vazio -> IDENTICOS, nenhuma regressao funcional.
+
+  NOTA SOBRE TLS: o teste HTTPS usa --cacert com a CA root real do Caddy
+  (/home/tlandskron/.local/share/medusa-tls/caddy/pki/authorities/medusa/
+  root.crt), preservando o SNI correto via --resolve. Nao foi usado curl -k;
+  o 302 e evidencia de cadeia validada, nao de bypass de verificacao.
+
+6.3 LISTENERS — DIFF ANTES vs DEPOIS
+  26 antes -> 26 depois
+  DIFF: vazio -> LISTENERS IDENTICOS.
+  Nenhum listener desapareceu. Nenhuma porta foi alterada.
+
+6.4 CONTAINERS PRESERVADOS
+  DIFF containers_antes.txt vs containers_depois.txt: vazio -> IDENTICOS.
+  Todos os 9 containers mantem "Up 4 days"; nenhum foi recriado ou reiniciado.
+
+  StartedAt (prova de ausencia de reinicio):
+    obs-node-exporter    2026-10-10T02:04:56Z
+    obs-grafana          2026-10-10T01:55:31Z
+    obs-prometheus       2026-10-10T02:01:54Z
+    medusa-searxng       2026-10-10T01:25:32Z
+    medusa-docling       2026-10-10T01:25:32Z
+    infra-qdrant         2026-10-10T01:25:32Z
+    infra-redis          2026-10-10T01:25:32Z
+    infra-postgres       2026-10-10T01:25:32Z
+    u0137-ollama         2026-10-10T01:25:32Z
+
+6.5 PROCESSOS CRITICOS — PIDs INALTERADOS
+  PID  | Servico          | Estado | Inicio do processo
+  -----+------------------+--------+---------------------------
+  5138 | caddy            | VIVO   | 2026-10-09 22:25:31
+  5134 | medusa-core      | VIVO   | 2026-10-09 22:25:31
+  5135 | rag-worker       | VIVO   | 2026-10-09 22:25:31
+  5136 | davy-jones       | VIVO   | 2026-10-09 22:25:31
+  4837 | tailscaled       | VIVO   | 2026-10-09 22:25:31
+  7236 | sshd             | VIVO   | 2026-10-09 22:26:11
+  5243 | dockerd          | VIVO   | 2026-10-09 22:25:31
+  Todos mantem o inicio original do boot. Nenhum processo critico reiniciou.
+
+6.6 FIREWALL INALTERADO
+  md5(iptables -S) = 3e296dfe27414619724e4464df453279
+  Politicas: INPUT ACCEPT | FORWARD DROP | OUTPUT ACCEPT
+  Identicas ao estado registrado em MEDUSA-NET-PORT-AUDIT-01.
+  Nenhuma regra adicionada, alterada ou removida.
+
+6.7 SEM REBOOT
+  boot_time = 2026-10-09 22:25:20  (inalterado desde o inicio da auditoria)
+  boot_id   = e165b5e5-c634-4e26-8d6e-7234355e6368  (inalterado)
+
+6.8 TESTE FUNCIONAL ADICIONAL — VEDACAO DE PORTA PRIVILEGADA
+  Executor: processo temporario e isolado, usuario tlandskron (uid=1000),
+  CapEff=0000000000000000 (nenhuma capability efetiva).
+  Sem linger: o processo encerra ao fim do teste. Nenhum servico tocado.
+
+  Porta    | Resultado
+  ---------+-------------------------------------------
+      80   | PERMISSION_DENIED (errno 13)
+     443   | PERMISSION_DENIED (errno 13)
+    1023   | PERMISSION_DENIED (errno 13)
+    8080   | VINCULOU
+   18080   | VINCULOU (controle)
+
+  INTERPRETACAO: o parametro esta efetivo. Um processo sem privilegio e sem
+  CAP_NET_BIND_SERVICE nao consegue mais abrir portas reservadas. Portas >=1024
+  continuam acessiveis, confirmando que o parametro nao foi aplicado de forma
+  excessiva.
+
+  Antes da correcao, as portas 80 e 443 vinculariam sem erro neste mesmo
+  processo — o que foi observado empiricamente em 2026-10-09 22:41.
+
+--------------------------------------------------------------------------------
+7. ETAPA A7 — ROLLBACK
+--------------------------------------------------------------------------------
+
+ROLLBACK NAO EXECUTADO.
+
+Gatilhos previstos: aplicacao falha, valor incorreto, regressao funcional,
+perda de listener, falha de servico, inconsistencia persistente.
+Nenhum desses gatilhos ocorreu:
+  - valor runtime = 1024 (correto)
+  - diff de pings vazio
+  - diff de listeners vazio (26 = 26)
+  - diff de containers vazio
+  - 0 servicos falhados
+  - PIDs criticos intactos
+  - firewall com md5 inalterado
+
+PROCEDIMENTO DISPONIVEL
+  /home/tlandskron/backups/net-harden-a01-20261014-125233/rollback.sh
+  Execucao: bash <caminho>/rollback.sh
+  Efeitos: sysctl -w para 0; remocao do arquivo criado; verificacao.
+  Nao reinicia servico. Nao remove configuracao preexistente (nao havia).
+
+--------------------------------------------------------------------------------
+8. ETAPA A8 — VERIFICACAO DE PERSISTENCIA
+--------------------------------------------------------------------------------
+
+METODO: ANALISE DE CONFIGURACAO. NAO FOI TESTADA POR REBOOT REAL.
+
+  IMPORTANTE: a VM nao foi reiniciada (proibido nesta etapa). A persistencia
+  foi validada por analise de configuracao e por execucao controlada da
+  sintaxe em namespace descartavel.
+
+ELEMENTOS VERIFICADOS
+  1) Arquivo em /etc/sysctl.d/ ......................... precedencia ADMIN
+  2) systemd-sysctl.service ............................ static, ACTIVE, no boot
+  3) Ordem sysctl.d(5): /etc/sysctl.d > /usr/local/lib > /usr/lib = /lib >
+     /etc/sysctl.conf .................................. sem sobrescrita posterior
+  4) /etc/sysctl.conf inexistente ...................... nada define depois
+  5) Nenhum arquivo vendor define o parametro .......... sem conflito
+  6) Nenhum unit executa sysctl -w para o parametro .... sem reapply conflitivo
+  7) systemd-sysctl --cat-config exibe a diretiva ..... arquivo no caminho de leitura
+  8) sysctl -p em netns isolado produz 1024 ........... sintaxe e efeito corretos
+
+CONCLUSAO: no proximo boot, systemd-sysctl lera /etc/sysctl.d/99-caribbean-
+pirates-privileged-ports.conf e aplicara 1024 ao namespace de rede do host.
+
+RESSALVA DOCUMENTADA: os containers EXISTENTES mantem o valor 0 em seus
+namespaces ate serem recriados. Isso e irrelevante para seguranca (nenhum
+processo dentro deles precisa de portas <1024 e o parametro em container nao
+segue o bind do host), mas em um futuro redeploy os containers novos herdarao
+1024. Nenhuma acao e necessária.
+
+--------------------------------------------------------------------------------
+9. INCIDENTES DURANTE A EXECUCAO
+--------------------------------------------------------------------------------
+
+I1 — Backups gravados com redirecionamento sem privilégio (RESOLVIDO)
+  Sintoma: Permission denied ao gravar baseline.txt, ports_antes.txt,
+  pings_antes.txt e outros no diretorio de backup (modo 700, owner root).
+  Causa: os redirecionamentos > dos comandos nao passavam por sudo.
+  Resolucao: redirecionamentos movidos para dentro de `sudo sh -c`. Nenhum
+  arquivo de configuracao foi afetado. Nenhum dado do sistema foi alterado.
+
+I2 — systemctl --user indisponivel sob sudo (RESOLVIDO)
+  Sintoma: "Failed to connect to user scope bus" ao consultar
+  systemctl --user a partir de um contexto com sudo sem XDG_RUNTIME_DIR.
+  Causa: o barramento de usuario nao e acessivel sem o XDG_RUNTIME_DIR correto.
+  Resolucao: export XDG_RUNTIME_DIR=/run/user/1000 e execucao sem sudo para as
+  consultas de user units. Nenhum servico foi afetado.
+
+I3 — /etc/sysctl.conf ausente (INFORMATIVO)
+  Nao e falha. O arquivo nao existe no sistema. O estado original (ausencia)
+  foi registrado. Nenhum arquivo foi criado nessa local.
+
+Nenhum incidente exigiu rollback.
+
+--------------------------------------------------------------------------------
+10. RISCOS RESIDUAIS
+--------------------------------------------------------------------------------
+
+RR1 — BAIXO — Containers mantem o valor 0 ate recriacao
+  Impacto: nulo para seguranca. Registrado em A2.5 e A8.
+
+RR2 — BAIXO — ip_unprivileged_port_start e por namespace
+  Alterar o host nao afeta namespaces de rede ja inicializados. Correcao
+  natural no proximo recriamento. Sem acao necessaria.
+
+RR3 — INFORMATIVO — SSH em 0.0.0.0 com interface IPv6 global
+  Pre-existente, fora do escopo desta etapa. Detalhado em
+  MEDUSA-NET-PORT-AUDIT-01 risco R11. Interface ens18 tem endereco IPv6 global
+  2804:7f4:c013:bada::/64 com rota default; sshd escuta em [::]:22.
+  Exposicao real depende de ACL do roteador (NOT_VERIFIED_EXTERNALLY).
+  Esta etapa NAO alterou essa exposicao.
+
+RR4 — INFORMATIVO — CA intermediaria expira em 2026-10-20
+  Pre-existente, fora do escopo. Detalhado em MEDUSA-PORT-5080-DIAG-01 e
+  MEDUSA-NET-PORT-AUDIT-01 risco R4. Esta etapa NAO tocou em certificados.
+
+RR5 — BAIXO — Ausencia de defesa em profundidade no firewall
+  INPUT em ACCEPT; a restricao de origem da UI depende do matcher do Caddy.
+  Pre-existente, fora do escopo. Detalhado em R3 da auditoria de portas.
+
+Nenhum risco residual novo foi introduzido por esta correcao. Ao contrario: o
+risco R2 da auditoria anterior foi eliminado.
+
+--------------------------------------------------------------------------------
+11. RECOMENDACOES PARA ETAPAS FUTURAS
+--------------------------------------------------------------------------------
+
+R-1  Tratar o ciclo de vida da PKI antes de 2026-10-20 (Etapa B sugerida pelo
+     roteiro do projeto). CA intermediaria de 7 dias e leaf de 12 horas exigem
+     redistribuicao aos clientes Windows ou CA de longa duracao.
+
+R-2  Restringir 8766 em tailscale0 ou remover o bind (risco R1 da auditoria).
+     E o unico acesso a aplicacao que contorna o filtro remote_ip do Caddy.
+
+R-3  Adicionar regra INPUT limitando as portas do Caddy a 192.168.15.0/24,
+     como defesa em profundidade.
+
+R-4  Manter o registro de portas em /home/tlandskron/txt/ e atualiza-lo a cada
+     publicacao nova.
+
+R-5  Se o medusa-caddy vier a operar em porta <1024 no futuro, sera necessario
+     AmbientCapabilities=CAP_NET_BIND_SERVICE no unit. Este parametro foi
+     deliberadamente NAO adicionado agora (fora do escopo autorizado), porque
+     hoje o Caddy usa 3000/3443 e nao precisa dele. A documentacao do arquivo
+     criado explica a razao.
+
+R-6  Reavaliar rp_filter=1 (risco R7 da auditoria) em janela separada.
+
+--------------------------------------------------------------------------------
+12. RESUMO FINAL
+--------------------------------------------------------------------------------
+
+Valor anterior ................ 0  (override manual de runtime, sem persistencia)
+Valor atual ................... 1024
+Configuracao persistente ...... /etc/sysctl.d/99-caribbean-pirates-privileged-ports.conf
+Precedencia ................... /etc/sysctl.d (admin) — sem sobrescrita
+SHA-256 do arquivo ............ 58f6767a64dbedcce5102bb52859fdd9eb315ea75768956883df4f69842452ff
+Arquivos alterados ............ 1 (criado). Nenhum arquivo existente modificado.
+Metadados do arquivo ........... root:root 644, 740 bytes
+Backup ........................ /home/tlandskron/backups/net-harden-a01-20261014-125233 (700)
+Rollback ...................... rollback.sh disponivel, NAO executado
+Persistencia .................. validada por ANALISE (nao por reboot)
+
+Servicos verificados (10) ..... docker, containerd, tailscaled, ssh, chrony,
+                                systemd-resolved, medusa-caddy, davy-jones,
+                                medusa-core, medusa-rag-worker — TODOS active
+Servicos falhados ............. 0
+Listeners ..................... 26 antes, 26 depois, diff VAZIO
+Containers .................... 9 antes, 9 depois, diff VAZIO, nenhum recriado
+PIDs criticos ................. 7 verificados, todos com inicio original
+Regressoes .................... NENHUMA (pings identicos)
+Firewall ...................... md5 inalterado, politicas identicas
+Reboot ........................ NAO
+Teste de vedacao .............. porta 80/443/1023 => PERMISSION_DENIED
+                                portas 8080/18080 => VINCULAM (controle)
+
+Relatorios
+  /home/tlandskron/txt/MEDUSA-NET-HARDEN-A01.txt   (este relatorio)
+  /home/tlandskron/log/MEDUSA-NET-HARDEN-A01.log   (evidencia bruta)
+  Proprietario: tlandskron:tlandskron
+  Permissoes..: 600
+
+CRITERIOS PARA HARDENING_COMPLETE — TODOS ATENDIDOS
+  [x] valor runtime igual a 1024
+  [x] configuracao persistente validada
+  [x] servicos criticos operacionais
+  [x] ausencia de regressoes identificadas
+  [x] backups disponiveis
+  [x] relatorios gravados
+
+CLASSIFICACAO FINAL: HARDENING_COMPLETE
+
+Encerramento: Etapa B (PKI) e Etapa C (porta 5080) NAO foram iniciadas,
+conforme instruido.
+
+================================================================================
+FIM DO RELATORIO — MEDUSA-NET-HARDEN-A01
+================================================================================

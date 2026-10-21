@@ -1,0 +1,662 @@
+================================================================================
+MEDUSA-PORT-5080-DIAG-01
+AUDITORIA TECNICA PARA MIGRACAO DA MEDUSA UI PARA HTTPS/5080
+================================================================================
+
+Projeto .......: Caribbean Pirates GPT / Medusa
+Servidor .......: medusa (Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic)
+Interface LAN .: 192.168.15.250
+Hostname ofc...: medusa.escritorio.local
+Data ...........: 2026-10-14
+Executor .......: diagnostico somente-leitura, sem alteracoes
+Nenhuma configuracao foi alterada. Nenhum servico foi interrompido.
+Nenhuma chave privada foi lida ou reproduzida neste relatorio.
+
+--------------------------------------------------------------------------------
+1. TABELA DE PORTAS E PROCESSOS
+--------------------------------------------------------------------------------
+
+PORTA   ENDERECO                  PROCESSO / ORIGEM              PAPEL
+------- -------------------------- ------------------------------ -------------------
+22      0.0.0.0                    sshd (system, socket)          SSH
+53      127.0.0.53 / 127.0.0.54    systemd-resolved               DNS stub
+3000   192.168.15.250              caddy pid 5138                Medusa UI via HTTP
+3000   127.0.0.1                  docker-proxy pid 37511          Grafana (container)
+3443   192.168.15.250              caddy pid 5138                Medusa UI via HTTPS
+3443   (UDP) 192.168.15.250        caddy pid 5138 fd=7            HTTP/3 (h3)
+5001   127.0.0.1                  docker-proxy pid 6391          docling-serve
+6333   127.0.0.1                  docker-proxy pid 6067          Qdrant
+8081   127.0.0.1                  docker-proxy pid 6091          SearXNG
+8765   127.0.0.1                  python3 pid 5134              Medusa Core
+8766   127.0.0.1                  python3.11 pid 5136           Davy-Jones (UI backend)
+8766   100.126.89.55 (tailscale)  python3.11 pid 5136           Davy-Jones via Tailscale
+8767   127.0.0.1                  python3 pid 5135              RAG worker
+9090   127.0.0.1                  docker-proxy pid 46091         Prometheus
+11434  127.0.0.1                  docker-proxy pid 6300          Ollama
+
+PORTAS VERIFICADAS E LIVRES (alvo do objetivo 1)
+
+  3001/TCP .... LIVRE (nenhum listener em IPv4 nem IPv6)
+  5080/TCP .... LIVRE (nenhum listener em IPv4 nem IPv6)
+
+OBSERVACAO CRITICA — CONFLITO NA PORTA 3000
+
+A porta 3000 esta em uso por DOIS processos diferentes, em enderecos distintos:
+
+  - 192.168.15.250:3000  -> caddy      (Medusa UI, HTTP)
+  - 127.0.0.1:3000       -> docker-proxy (Grafana)
+
+Nao ha colisao de bind porque os enderecos diferem, mas o par (porta, origem) se
+confunde em diagnostico, firewall e documentacao. A migracao para 5080 resolve
+essa ambiguidade.
+
+--------------------------------------------------------------------------------
+2. PORTAS DO GRAFANA, PROMETHEUS E LOKI
+--------------------------------------------------------------------------------
+
+GRAFANA — EM OPERACAO
+  Container ...: obs-grafana (grafana/grafana:12.3.1)
+  Exposto em ...: 127.0.0.1:3000 -> 3000/tcp (somente loopback)
+  Rede interna : observability-net (bridge 172.20.0.0/16), IP 172.20.0.5
+  Stateful ...: volume observability_grafana_data
+  Tempo no ar .: Up 4 days
+  Acesso ......: http://127.0.0.1:3000 (sem exposicao a LAN)
+  URL raiz .....: https://grafana.escritorio.local:6001
+                  (GF_SERVER_ROOT_URL; hostname/porta ainda NAO publicado —
+                   aponta para uma configuracao futura do Caddy em :6001 que
+                   nao existe ate hoje. Nao causa redirecionamento porque o
+                   dominio nao resolve, mas e uma inconsistencia a resolver.)
+
+PROMETHEUS — EM OPERACAO
+  Container ...: obs-prometheus (prom/prometheus:v3.7.3)
+  Exposto em ...: 127.0.0.1:9090 -> 9090/tcp (somente loopback)
+  Rede interna : observability-net, IP 172.20.0.3
+  Retencao ....: 15 dias / 8 GB
+  Tempo no ar .: Up 4 days
+
+NODE EXPORTER — EM OPERACAO
+  Container ...: obs-node-exporter (prom/node-exporter:v1.9.1)
+  Exposto em ...: 9100/tcp NAO publicado (rede interna apenas)
+  Coleta ......: metricas de host
+
+LOKI — NAO INSTALADO
+  Containers Loki/promtail/alloy ...: nenhum
+  Unidades systemd loki/promtail/alloy/grafana-loki: todas inactive
+  Porta 3100 .........................: livre, sem listener
+  Binarios loki/promtail/logcli .......: ausentes do PATH
+  Observacao: o objetivo 2 previa "portas efetivamente utilizadas pelo Grafana
+  e Loki". O Loki ainda nao existe no host — e etapa pendente do projeto,
+  conforme documentado em /home/tlandskron/observability/OBSERVABILITY-MEDUSA.md.
+  A porta 3100 esta livre e nao conflita com a migracao.
+
+--------------------------------------------------------------------------------
+3. EXECUCAO DO CADDY, CONFIG ATIVA E INICIALIZACAO
+--------------------------------------------------------------------------------
+
+VERSAO
+  Binario ....: /home/tlandskron/.local/bin/caddy
+  Tamanho ....: 51.884.194 bytes
+  Permissoes .: -rwx------ tlandskron:tlandskron (somente o usuario)
+  Versao .....: v2.11.6 (h1:sWxeamdlCZvcH4qeDz8bB0mdxgfYTeqV7HxOjXyIRas=)
+
+CONFIG ATIVA (unica, em uso pelo processo)
+  /home/tlandskron/.config/medusa-caddy/Caddyfile
+  1390 bytes, mtime 2026-10-02 10:06, owner tlandskron, modo 0600
+  Validado com `caddy validate` => "Valid configuration" (somente-leitura)
+
+ARQUIVOS DE PREPARACAO/BACKUP NO MESMO DIRETORIO (nao estao em uso)
+  Caddyfile.ca-prepare ................. mtime 2026-10-02 10:03
+     Listener HTTPS em 127.0.0.1:3443 com resposta estatica de preparo
+  Caddyfile.https-final-prepared ....... mtime 2026-10-02 10:06
+     Listener HTTPS em :3000 sem `bind` (destinado a substituir o HTTP:3000
+     apos validacao de confianca nos clientes Windows)
+  proxy.env ............................ mtime 2026-10-02 10:06 (85 bytes)
+     Contem MEDUSA_PROXY_SECRET (nao reproduzido neste relatorio)
+
+INICIALIZACAO AUTOMATICA
+  Unidade ...: medusa-caddy.service (systemd --user)
+  Caminho ....: /home/tlandskron/.config/systemd/user/medusa-caddy.service
+  Estado .....: enabled / enabled, active (running), PID 5138
+  Cgroup .....: /user.slice/user-1000.slice/user@1000.service/app.slice/
+                medusa-caddy.service
+  Ordem .....: After=network-online.target davy-jones.service
+  Seguranca .: NoNewPrivileges=true, PrivateTmp=true, UMask=0077
+  Log ........: /home/tlandskron/log/medusa-caddy-runtime.log
+                (append em stdout e stderr)
+  Env .......: XDG_DATA_HOME=/home/tlandskron/.local/share/medusa-tls
+                XDG_CONFIG_HOME=/home/tlandskron/.config/medusa-caddy
+                EnvironmentFile=/home/tlandskron/.config/medusa-caddy/proxy.env
+  ExecStart .: caddy run --config <Caddyfile> --adapter caddyfile
+  Reinicio ..: Restart=on-failure, RestartSec=5
+  Observacao : admin esta DESLIGADO no Caddyfile (`admin off`). Portanto a API
+                administrativa em 127.0.0.1:2019 nao responde e nao ha reload
+                sem restart. Mudanca de porta exige restart da unidade.
+
+--------------------------------------------------------------------------------
+4. ENCAMINHAMENTO ATUAL DO CADDY PARA O BACKEND
+--------------------------------------------------------------------------------
+
+DOIS SITE BLOCKS, ambos com destino identico: 127.0.0.1:8766 (Davy-Jones)
+
+BLOCO A — HTTP
+  Endereco .....: http://medusa.escritorio.local:3000
+  Bind .........: 192.168.15.250
+  Restricao ....: @outside not remote_ip 192.168.15.0/24  -> abort @outside
+                  (somente origem 192.168.15.0/24; demais abortadas)
+  Headers ......: X-Content-Type-Options nosniff
+                  X-Frame-Options DENY
+                  Referrer-Policy same-origin
+
+BLOCO B — HTTPS
+  Endereco .....: https://medusa.escritorio.local:3443
+  Bind .........: 192.168.15.250
+  TLS ..........: issuer internal { ca medusa }
+                  protocolos tls1.2 e tls1.3
+  Restricao ....: identica ao bloco A (@outside / abort)
+  Headers ......: identicos ao bloco A
+
+REVERSE_PROXY (identico nos dois blocos)
+  Destino .........: 127.0.0.1:8766
+  Host reescrito ..: header_up Host 127.0.0.1:8766
+  Authorization ..: header_up -Authorization  (removido no proxy)
+  Autenticacao ....: header_up X-Medusa-Proxy-Key {$MEDUSA_PROXY_SECRET}
+  Contexto externo : X-Medusa-External-Host   {http.request.hostport}
+                     X-Medusa-External-Scheme {http.request.scheme}
+                     X-Medusa-Client-IP       {http.request.remote.host}
+
+GLOBAL
+  admin off
+  auto_https disable_redirects  (Caddy nao redireciona 5080->https sozinho)
+  skip_install_trust
+  CA interna ....: pki { ca medusa { name "Medusa Escritorio Local CA" ... } }
+
+COMPROVACAO POR RESPOSTA REAL (somente-leitura)
+
+  HTTP :3000  -> HTTP/1.1 302 Found, Location: /login
+                  Server: BaseHTTP/0.6 Python/3.11.16   (backend alcancado)
+                  Via: 1.0 Caddy
+  HTTPS :3443 -> HTTP/2 302, location: /login
+                  alt-svc: h3=":3443"                   (HTTP/3 anunciado)
+                  server: BaseHTTP/0.6 Python/3.11.16
+                  via: 1.0 Caddy
+
+  `Via: 1.0 Caddy` + `Server: BaseHTTP` confirmam a cadeia
+  cliente -> Caddy -> Davy-Jones (8766). Encaminhamento confirmado.
+
+--------------------------------------------------------------------------------
+5. DISPONIBILIDADE DA PORTA 5080 E FIREWALL
+--------------------------------------------------------------------------------
+
+PORTA 5080 — CONFIRMADA LIVRE
+  ss -tlnp sport = :5080 ........... nenhuma linha
+  netstat -tlnp | grep :5080 ....... nenhuma linha
+  Sem processo, sem socket, sem reserva. Livre em IPv4 e IPv6.
+
+FIREWALL
+  ufw ............................. nao instalado no host
+  iptables INPUT policy ............ ACCEPT
+  iptables FORWARD policy .......... DROP
+  iptables OUTPUT policy ........... ACCEPT
+
+  Cadeias relevantes em INPUT: apenas `ts-input` (do Tailscale):
+    ip saddr 100.126.89.55 iifname lo ......... accept
+    iifname tailscale0 ........................ accept
+    udp dport 41641 ........................... accept
+    ip saddr 100.115.92.0/23 iifname != tailscale0 ... return
+    ip saddr 100.64.0.0/10 iifname != tailscale0 .... drop
+
+  Nao existe regra INPUT que negue 5080. Com policy ACCEPT e sem regra de
+  bloqueio, o trafego chegando a 5080 seria aceito pelo kernel. A restricao de
+  origem NAO vem do firewall: vem do `@outside / abort @outside` do Caddy.
+
+  DOCKER-INPUT: nao ha cadeia; as regras DOCKER aplicam-se a FORWARD, nao a
+  INPUT. Portas publicadas em 127.0.0.1 (3000 Grafana, 9090 Prometheus) nao sao
+  alcancaveis da LAN por essa via.
+
+CONCLUSAO DO OBJETIVO 5
+  5080 esta livre e nenhuma regra de firewall a bloqueia. A exposicao real
+  continuara governada pelo Caddy, que deve preservar o filtro
+  `remote_ip 192.168.15.0/24`.
+
+--------------------------------------------------------------------------------
+6. CERTIFICADOS TLS, CADEIA DE CONFIANCA E HOSTNAME
+--------------------------------------------------------------------------------
+
+ARMAZENAMENTO (XDG_DATA_HOME do servico)
+  /home/tlandskron/.local/share/medusa-tls/caddy/
+    instance.uuid
+    last_clean.json
+    pki/authorities/medusa/root.crt        (611 B)
+    pki/authorities/medusa/root.key        (227 B)  [chave — nao reproduzida]
+    pki/authorities/medusa/intermediate.crt (668 B)
+    pki/authorities/medusa/intermediate.key (227 B) [chave — nao reproduzida]
+    certificates/medusa/medusa.escritorio.local/
+      medusa.escritorio.local.crt  (1352 B)
+      medusa.escritorio.local.key  (227 B)   [chave — nao reproduzida]
+      medusa.escritorio.local.json (67 B)
+
+CERTIFICADO FOLHA (servido em 3443)
+  subject .....: (vazio)
+  issuer ......: CN=Medusa Escritorio Local Intermediate CA
+  SAN .........: DNS:medusa.escritorio.local
+  notBefore ...: 2026-10-14 10:45:31 UTC
+  notAfter ....: 2026-10-14 22:45:31 UTC   (validade de 12 HORAS)
+  Tipo ........: sem subject (common name vazio); identificacao por SAN
+  Chave .......: EC prime256v1 / ecdsa-with-SHA256
+  Negocio ....: TLS 1.3, grupo X25519MLKEM768
+
+CADEIA
+  [0] folha (SAN medusa.escritorio.local)
+      -> [1] CN=Medusa Escritorio Local Intermediate CA
+          -> CN=Medusa Escritorio Local Root CA
+  Root CA .....: Validade NAO LIDA (arquivo presente, nao inspecionado nesta
+                 auditoria para evitar qualquer manipulacao do material PKI)
+  Intermediaria: notBefore 2026-10-13 18:05:31 UTC
+                 notAfter  2026-10-20 18:05:31 UTC  (validade de 7 DIAS)
+  Verificacao .: `openssl s_client` => depth=1 CN=Medusa Escritorio Local
+                 Intermediate CA; verify error:num=20 "unable to get local
+                 issuer certificate" (esperado: CA raiz nao esta no trust store
+                 do sistema; confia-se na distribuicao manual da CA aos clientes)
+
+ALERTA DE CICLO DE VIDA (achado relevante)
+  O certificado folha e rotacionado pelo proprio Caddy a cada 8 horas:
+    log: "certificate is in configured renewal window ... remaining: 13800s"
+         -> "renewing certificate" -> "renewed successfully"
+         -> "reloading managed certificate"
+  A CA intermediaria tem validade de apenas 7 dias e foi criada em 2026-10-13.
+  Consequencia: a CA raiz/intermediaria EXPIRA em 2026-10-20. Apos essa data o
+  Caddy podera falhar ao emitir novos certificados, quebrando o acesso HTTPS.
+  Esta auditoria NAO altera isso — e registrado como risco herdado, valendo
+  independente da migracao de porta.
+
+HOSTNAME
+  medusa.escritorio.local
+  - Resolucao local no host: NAO RESOLVE (getent retorna vazio)
+  - /etc/hosts do host: contem apenas 127.0.1.1 medusa (sem o FQDN)
+  - resolv.conf: nameserver 127.0.0.53 (systemd-resolved), search tail07368.ts.net
+  - Tailscale DNS: habilitado, MagicDNS ativo
+  Implicacao: a resolucao de medusa.escritorio.local depende de DNS da LAN
+  (192.168.15.0/24) externo ao host, ou de entrada no hosts de cada cliente.
+  A porta nao afeta a resolucao de nome.
+
+--------------------------------------------------------------------------------
+7. DEPENDENCIAS DE URL, COOKIE, CSRF E PORTA ATUAL
+--------------------------------------------------------------------------------
+
+ESTE E O BLOCK CRITICO DA MIGRAÇÃO. Resumo: a porta esta TRIPLICADA em
+codigo-fonte, config e documentacao. Migrar sem tocar nesses pontos quebrará o
+login.
+
+7.1 ALLOWLIST DE ORIGENS — BLOQUEIO DURO
+  Arquivo: /home/tlandskron/davy-jones/config/human_auth.json
+  Campo `origins` (valor atual):
+    "http://medusa.escritorio.local:3000"
+    "https://medusa.escritorio.local:3443"
+    "https://medusa.escritorio.local:3000"
+  Contrato declarado: "MEDUSA_HUMAN_AUTH_V1"
+
+  Codigo que consome (davy.py, metodo proxy_context, linhas ~353-361):
+    host   = headers['X-Medusa-External-Host']
+    scheme = headers['X-Medusa-External-Scheme']
+    origin = scheme + '://' + host
+    if origin not in auth.config['origins'] or headers['Host'] != '127.0.0.1:8766':
+        raise AuthError('proxy_origin_rejected', 403)
+
+  IMPACTO DIRETO: se o Caddy passar a atender em https://medusa.escritorio.local:5080
+  SEM adicionar essa origin ao human_auth.json, TODAS as requisicoes humanas
+  retornarao HTTP 403 "proxy_origin_rejected". Este e o principal bloqueio
+  funcional da migracao.
+
+7.2 VERIFICACAO DE ORIGIN / CSRF SECUNDARIA
+  davy.py, metodo allowed (linhas ~365-370):
+    - Sec-Fetch-Site == 'cross-site'  -> 403
+    - Origin header != proxy['origin'] -> 403
+  Ambas derivam do mesmo origin. Consequencia automatica de 7.1.
+
+7.3 COOKIES — DEPENDEM DE ESQUEMA, NAO DE PORTA
+  Constantes (human_auth importado em davy.py):
+    SESSION_COOKIE, LOGIN_COOKIE
+    SESSION_ABSOLUTE = 28800 s (8 h)
+    sessao ociosa    = 1800 s (30 min)
+  A flag de seguranca vem de proxy['secure'] = (scheme == 'https').
+  Consequencia pratica:
+    - Migracao de :3000 (HTTP) para :5080 (HTTPS) muda a flag para True
+    - Cookies passam a receber o atributo Secure
+    - Sessoes ATIVAS abertas via HTTP podem ser invalidadas
+      (o navegador aceita cookie novo; o antigo sem Secure pode conflitar)
+    - O flag `HttpOnly` e a semantica de cookie permanecem inalterados
+
+7.4 REDIRECIONAMENTOS — RELATIVOS, SEM DEPENDENCIA DE PORTA
+  davy.py metodo redirect (linhas ~387-388):
+    send_response(302); send_header('Location', path)
+  Uso observado: redirect('/login')
+  Como o caminho e RELATIVO, a URL absoluta de origem nao aparece no Location.
+  Confirmado empiricamente: HTTP/1.1 302 com "Location: /login" em :3000 e
+  "location: /login" em :3443. Nenhuma URL absoluta hardcoded no backend.
+
+7.5 CSP E HEADERS DE SEGURANCA
+  davy.py metodo send, linha ~350:
+    Content-Security-Policy: default-src 'self'; img-src 'self' blob:;
+      script-src 'unsafe-inline'; style-src 'unsafe-inline';
+      frame-ancestors 'none'; base-uri 'none'
+  based em 'self'. Nao referencia porta nem host. Nao quebra na migração.
+
+7.6 CLI / TOKEN TECNICO — NAO AFETADO
+  O acesso direto por loopback/Tailscale em 8766 exige
+  Authorization: Bearer <token de admin.json>. Esse caminho nao passa pelo
+  Caddy e nao muda com a migracao. Preservado.
+
+7.7 TESTES AUTOMATIZADOS QUE FIXAM AS PORTAS ATUAIS
+  /home/tlandskron/davy-jones/tests/auth_tls_live_check.py
+    linha 12: page.goto('https://medusa.escritorio.local:3443/')
+              page.wait_for_url('https://medusa.escritorio.local:3443/login')
+    linha 15: page.goto('http://medusa.escritorio.local:3000/')
+              page.wait_for_url('http://medusa.escritorio.local:3000/login')
+    linha 19: socket para 192.168.15.250:3000 com Host medusa.escritorio.local:3000
+  /home/tlandskron/davy-jones/tests/test_human_auth.py
+    linha 9:  cfg['origins'] fixadas em :3000 e :3443 (usadas em ~15 asserts)
+  /home/tlandskron/davy-jones/tests/auth_ui_fixture_check.py  (referencia :3000)
+  ESTES TESTES QUEBRARAO se a migracao ocorrer sem atualizacao. Sao o meio
+  mais confiavel de validar a migracao depois de executada.
+
+7.8 DOCUMENTACAO QUE FIXA AS PORTAS
+  /home/tlandskron/davy-jones/README.md linha 593:
+    "...atende HTTP em :3000 e HTTPS temporario em :3443; o listener HTTPS
+     exclusivo em :3000 esta preparado..."
+  /home/tlandskron/txt/MEDUSA-UI-AUTH-01-preservation.json:
+    "proxy_listeners": ["192.168.15.250:3000 HTTP",
+                        "192.168.15.250:3443 temporary HTTPS"]
+    Este arquivo e um REGISTRO DE PRESERVACAO historico. Nao deve ser editado
+    para "acertar" a porta — ele registra o estado da auditoria UI-AUTH-01.
+
+7.9 GRAFANA — DEPENDENCIA DE URL NAO RELACIONADA
+  GF_SERVER_ROOT_URL=https://grafana.escritorio.local:6001
+  Hostname/porta inexistentes hoje. Nao envolve a Medusa UI nem a porta 5080,
+  mas deve ser reconciliado na mesma janela para evitar confusao de portas.
+
+--------------------------------------------------------------------------------
+8. SERVICOS QUE REINICIARIAO OU SOBRESCREVERIAM O CADDY
+--------------------------------------------------------------------------------
+
+BUSCA POR ESCRITAS NO CADDYFILE: NENHUMA ENCONTRADA
+  grep em /home/tlandskron/davy-jones/deploy, /home/tlandskron/medusa/ops,
+  /home/tlandskron/script por 'Caddyfile|medusa-caddy'
+  => nenhum resultado (fora de bibliotecas de terceiros irrelevantes)
+
+OPERADORES lab_ops.py — NAO TOCAM EM CADDY
+  /home/tlandskron/medusa/ops/lab_ops.py
+    grep por caddy|Caddy|3443|3000|5080|restart|systemctl|subprocess
+    => NENHUMA ocorrencia
+    Health e implementados por HTTP direto a 127.0.0.1:8765/8766 e
+    127.0.0.1:5001 — nao passam por Caddy e nao desconhecem portas do proxy.
+
+TIMERS ATIVOS (systemd --user) — NENHUM REESCREVE CONFIG
+
+  TIMER                          PROXIMO                    EXECUTA
+  ------------------------------ -------------------------- ------------------------
+  medusa-davy-health.timer       2026-10-14 10:52           lab_ops.py health
+  medusa-remote-backup.timer     2026-10-14 11:01           replicacao SMB
+  medusa-davy-backup.timer       2026-10-15 03:39           lab_ops.py backup
+  launchpadlib-cache-clean.timer 2026-10-14 22:34           limpeza de cache
+
+  Os tres timers medusa-* gravam em /home/tlandskron/txt/*.json e
+  /home/tlandskron/log/*.jsonl. Nenhum escreve em .config/medusa-caddy/.
+  ATENCAO OPERACIONAL: durante a janela de migracao, o health timer pode rodar
+  e gravar registros; isso e desejavel (baseline) e nao interfere.
+
+CRON: `crontab` nao esta instalado neste host para o usuario. Nao ha crontab
+      de usuario a auditar. (CRON DO ROOT/DE SISTEMA NAO FOI AUDITADO — fora do
+      escopo somente-leitura concedido para o usuario.)
+
+UNIDADE DO CADDY
+  medusa-caddy.service tem Restart=on-failure. Um restart naoeditara
+  configuracao — apenas relera o Caddyfile do disco. O risco real e o oposto:
+  se o Caddyfile for editado incorretamente, o restart falha e o servico fica
+  inacessivel ate correcao.
+
+AUTOMATICAO DE CERTIFICADOS (o unico "re-escritor" de estado)
+  O Caddy reescreve os arquivos de certificado em
+  .local/share/medusa-tls/caddy/certificates/... a cada ~8 horas. Isso e
+  esperado e independe da migracao de porta, mas significa que um backup do
+  material PKI feito as 10:00 pode estar defasado as 10:45.
+
+--------------------------------------------------------------------------------
+9. RISCOS E POSSIVEIS CONFLITOS
+--------------------------------------------------------------------------------
+
+R1 — ALTO — ORIGIN NAO AUTORIZADA QUEBRA O LOGIN (CONFIRMADO)
+     Migrar para 5080 sem acrescentar "https://medusa.escritorio.local:5080"
+     ao array `origins` em human_auth.json produz 403 proxy_origin_rejected em
+     100% das requisicoes humanas. Nao ha fallback: e validacao dura.
+     Mitigacao: alterar origins ANTES do reload do Caddy.
+
+R2 — ALTO — COOKIES INCOMPATIVEIS DURANTE A TRANSIÇÃO
+     De HTTP (sem Secure) para HTTPS (com Secure) invalida sessoes abertas.
+     Usuarios com abas abertas serao deslogados. Aceitavel e esperado, mas
+     deve ser comunicado. Risco de perda de trabalho nao salvo em sessao.
+
+R3 — ALTO — CA INTERMEDIARIA EXPIRA EM 2026-10-20 (6 DIAS)
+     Validade de 7 dias, criada 2026-10-13. Independente da porta, mas se a
+     janela de migracao escorregar alem de 20/10, o HTTPS pode falhar por
+     material PKI expirado, confundindo-se com erro de migracao.
+     Recomendacao: tratar a PKI antes ou em paralelo.
+
+R4 — MEDIO — TESTES AUTOMATIZADOS QUEBRAM
+     auth_tls_live_check.py, test_human_auth.py e auth_ui_fixture_check.py fixam
+     :3000 e :3443. Falharao apos a migracao se nao atualizados. Isso e
+     desejavel (sinal de que a migracao foi concluida), mas deve ser
+    _planejado_ e nao inesperado.
+
+R5 — MEDIO — CLIENTES WINDOWS COM CERTIFICADO INSTALADO PARA :3443
+     A CA e distribuida manualmente aos clientes (o trust store do host nao a
+     conhece). Ao migrar para 5080, a cadeia permanece identica (mesma CA, mesmo
+     SAN medusa.escritorio.local), portanto o certificado ja instalado deve
+     continuar valendo. O que muda e a URL, exigindo nova marcacao/favorito.
+     Risco: Browsers podem exibir aviso se a raiz/intermediaria nao estiver
+     instalada no cliente. Confirmar previamente.
+
+R6 — MEDIO — REUTILIZACAO DO SITE BLOCK
+     O bloco https:3000 ja preparado (Caddyfile.https-final-prepared) esta
+     sendo finalizado. Uma migracao para 5080 compete com esse trabalho
+     pendente. Definir se 5080 substitui, coexist e ou adia o HTTPS em :3000.
+
+R7 — BAIXO — DUPLICIDADE DE PAPEL DA PORTA 3000
+     Caddy (LAN) e Grafana (loopback) dividem o numero 3000. Apos a migracao
+     3000 fica apenas com o Grafana em loopback, eliminando a ambiguidade.
+     Beneficio, nao risco.
+
+R8 — BAIXO — CONSISTENCIA DO GRAFANA root_url (:6001)
+     Aponta para porta nao publicada. Nao quebra nada hoje, mas increases a
+     chance de colisao conceitual com 5080 no futuro.
+
+R9 — BAIXO — AUSENCIA DE FIREWALL DE APLICACAO
+     Nenhuma regra INPUT nega portas. A seguranca depende inteiramente do
+     `abort @outside` do Caddy. Se o bloco novo em 5080 omitir esse matcher,
+     a Medusa UI ficaria exposta a toda a LAN e a qualquer rota Tailscale
+     (100.64.0.0/10 e aceito em ts-input). O bloco novo DEVE replicar
+     `@outside not remote_ip 192.168.15.0/24` + `abort @outside`.
+
+R10 — INFORMATIVO — DAVY-JONES EXPOSO EM TAILSCALE (100.126.89.55:8766)
+     O backend escuta direto na interface Tailscale, sem passar pelo Caddy e
+     sem o filtro remote_ip 192.168.15.0/24. Este caminho etoken-protected e
+     nao e afetado pela migracao, mas significa que o filtro do proxy NAO cobre
+     todo o acesso a UI.
+
+--------------------------------------------------------------------------------
+10. PLANO DE MIGRACAO (PROPOSTO — NAO EXECUTADO NESTA ETAPA)
+--------------------------------------------------------------------------------
+
+PRE-VERIFICACOES (sem impacto)
+  P1. Confirmar que 5080 permanece livre ate a janela
+  P2. Confirmar ready:true em /home/tlandskron/txt/MEDUSA-DAVY-health.json
+  P3. Copiar (NÃO mover) para snapshot datado:
+        .config/medusa-caddy/Caddyfile
+        .config/medusa-caddy/proxy.env
+        davy-jones/config/human_auth.json
+      Sugestao: ~/.medusa-5080-backup-YYYYmmdd-HHMMSS/ com modo 0700
+      Cuidado: proxy.env e human_auth.json contem segredos. Manter 0600 e nao
+      anexar a relatorios.
+  P4. Validar a proposta de Caddyfile com `caddy validate` ANTES de aplicar
+      (comando somente-leitura, semefeito de runtime)
+  P5. Confirmar com o usuario se a root CA esta instalada nos clientes Windows
+
+PASSO 1 — AUTHORIZE A ORIGIN (ordem obrigatoria)
+  Editar davy-jones/config/human_auth.json: acrescentar
+    "https://medusa.escritorio.local:5080"
+  ao array `origins`, preservando as tres entradas existentes.
+  Efeito: nenhum servico reiniciado. A origem passa a ser aceita assim que o
+  Caddy atender em 5080.
+
+PASSO 2 — PUBLICAR O NOVO SITE BLOCK
+  Acrescentar ao Caddyfile um terceiro bloco:
+    https://medusa.escritorio.local:5080 {
+      tls { issuer internal { ca medusa }  protocols tls1.2 tls1.3 }
+      bind 192.168.15.250
+      @outside not remote_ip 192.168.15.0/24
+      abort @outside
+      header { X-Content-Type-Options nosniff  X-Frame-Options DENY  Referrer-Policy same-origin }
+      reverse_proxy 127.0.0.1:8766 {
+        header_up Host 127.0.0.1:8766
+        header_up -Authorization
+        header_up X-Medusa-Proxy-Key {$MEDUSA_PROXY_SECRET}
+        header_up X-Medusa-External-Host   {http.request.hostport}
+        header_up X-Medusa-External-Scheme {http.request.scheme}
+        header_up X-Medusa-Client-IP       {http.request.remote.host}
+      }
+    }
+  COPIAR ESTRUTURALMENTE do bloco https:3443 existente — nao reconstruir.
+  Isso preserva automaticamente os headers de seguranca e o filtro de origem.
+
+PASSO 3 — VALIDAR SEM APLICAR
+  caddy validate --config <Caddyfile> --adapter caddyfile
+  Esperado: "Valid configuration"
+
+PASSO 4 — APLICAR (janela unica, outage curto)
+  systemctl --user restart medusa-caddy.service
+  Como admin esta off, nao ha reload online. O restart e o mecanismo correto.
+  Outage esperado: sub-segundo a poucos segundos.
+
+PASSO 5 — VERIFICAR
+  curl -sk -o /dev/null -D - --resolve medusa.escritorio.local:5080:192.168.15.250 \
+       https://medusa.escritorio.local:5080/login
+  Esperado: HTTP/2 200 e ausencia de 403 proxy_origin_rejected
+  Confirmar que /login responde e que o POST de login nao retorna 403.
+
+PASSO 6 — ATUALIZAR TESTES E DOCUMENTACAO
+  auth_tls_live_check.py  (linhas 12, 15, 19)
+  test_human_auth.py      (linha 9)
+  auth_ui_fixture_check.py
+  davy-jones/README.md    (linha 593)
+  Criar novo registro em txt/ no padrao MEDUSA-PORT-5080-01-preservation.json
+  NAO editar MEDUSA-UI-AUTH-01-preservation.json (registro historico)
+
+PASSO 7 — JANELA DE OBSERVACAO
+  Manter :3000 e :3443 ativos ate confirmar estabilidade e aceitacao.
+  Remocao dos blocos antigos deve ser uma etapa separada e explicita,
+  nao parte da migracao inicial.
+
+DECISAO PENDENTE (nao presumir)
+  Os blocos :3000 e :3443 permanecem ativos apos o Passo 4? A migracao e
+  aditiva por padrao, com desativacao posterior sob decisao explicita.
+  Recomendo: SIM, manter por 7 dias.
+
+--------------------------------------------------------------------------------
+11. PROCEDIMENTO DE ROLLBACK
+--------------------------------------------------------------------------------
+
+GATILHOS DE ROLLBACK
+  - 403 proxy_origin_rejected em qualquer requisicao humana
+  - TLS handshake falhando em 5080
+  - Health de davy-jones retornando ready:false
+  - Impossibilidade de login apos a mudanca
+
+ROLLBACK R1 — SOMENTE O PROXY (mais comum, ~segundos)
+  1. Remover o bloco https:...:5080 do Caddyfile
+     (restaurar o arquivo do snapshot de P3, ou editar removendo o bloco)
+  2. caddy validate --config <Caddyfile> --adapter caddyfile
+  3. systemctl --user restart medusa-caddy.service
+  4. Verificar:
+     curl -s -o /dev/null -w '%{http_code}' -H 'Host: medusa.escritorio.local:3000' \
+          http://192.168.15.250:3000/login      -> esperado 200
+  Efeito: UI volta em :3000/:3443 imediatamente. Sem tocar em servicos.
+
+ROLLBACK R2 — INCLUINDO A ORIGIN
+  Se o Passo 1 tiver sido feito e for necessario reverter:
+  restaurar davy-jones/config/human_auth.json do snapshot de P3.
+  Observacao: o arquivo NAO exige restart — e lido por request em
+  proxy_context(). Confirmado no codigo. Nao ha cache de config no davy.py.
+  Aun assim, se o comportamento nao normalizar, reiniciar:
+  systemctl --user restart davy-jones.service
+  (Restart=on-failure, RestartSec=3; este restart e do backend e afeta
+   requisicoes por alguns segundos)
+
+ROLLBACK R3 — VOLTAR AO ESTADO INICIAL COMPLETO
+  Restaurar do diretorio de snapshot os tres arquivos:
+    .config/medusa-caddy/Caddyfile
+    .config/medusa-caddy/proxy.env
+    davy-jones/config/human_auth.json
+  systemctl --user restart medusa-caddy.service
+  systemctl --user restart davy-jones.service   (apenas se necessario)
+  Validar com health timer ou manualmente:
+    python3 /home/tlandskron/medusa/ops/lab_ops.py health
+  Esperado: ready:true nos 4 checks.
+
+ROLLBACK R4 — CERTIFICADOS
+  Os certificados sao reemitidos automaticamente pelo Caddy a cada ~8h. Uma
+  queda de TLS em 5080 raramente e problema de material PKI. Se for:
+  parar o caddy, remover APENAS o leaf 5080 (se existir),
+  /home/tlandskron/.local/share/medusa-tls/caddy/certificates/medusa/
+  e iniciar — o Caddy reemite. NAO remover pki/authorities (invalidaria a CA
+  de todos os clientes).
+  Risco alto: tocar no material PKI exige cautela e_backup previo.
+
+VERIFICACAO POS-ROLLBACK
+  ss -tlnp | grep -E ':(3000|3443|5080)'
+  deve mostrar 3000 e 3443 em 192.168.15.250 e NADA em 5080.
+  python3 /home/tlandskron/medusa/ops/lab_ops.py health  -> ready:true
+
+--------------------------------------------------------------------------------
+12. RECOMENDACAO FINAL
+--------------------------------------------------------------------------------
+
+*** NEEDS_REVIEW ***
+
+A porta 5080 esta LIVRE e tecnicamente viavel. A migracao e de baixo risco
+TECNICO e de risco OPERACIONAL medio (deslogamento de sessoes + atualizacao de
+testes), desde que uma dependencia critica seja atendida primeiro.
+
+BLOQUEIO CONFIRMADO PARA EXECUÇÃO IMEDIATA:
+  A origin "https://medusa.escritorio.local:5080" NAO existe em
+  davy-jones/config/human_auth.json. Sem o Passo 1, a migracao resulta em
+  indisponibilidade total da UI (403 em toda requisicao). Este item e
+  sequencia-obrigatorio e esta claramente identificado.
+
+RAZOES PARA NEEDS_REVIEW (nao READY):
+  1. A ordem Passo 1 -> Passo 4 depende de edicao em dois arquivos distintos
+     (config do backend e config do proxy). Falhar apenas um dos dois resulta
+     em indisponibilidade.
+  2. Ha trabalho pendente e relacionado (HTTPS exclusivo em :3000 ja preparado
+     em Caddyfile.https-final-prepared). Migrar para 5080 compete com essa
+     finalizacao — R6.
+  3. Confianca de certificado no cliente Windows (R5) nao pode ser verificada
+     por este diagnostico, que roda no servidor.
+  4. A PKI intermediaria expira em 2026-10-20 (R3), criando prazo real.
+
+PODERIA SER READY APOS:
+  - confirmacao do usuario sobre coexistencia (decisao pendente do item 10)
+  - confirmacao de distribuicao da CA nos clientes Windows
+  - definicao do que fazer com o bloco https:3000 preparado
+
+O que NAO impede a migracao (verificado e nao bloqueante):
+  - firewall: 5080 livre, INPUT em ACCEPT, sem regra conflitante
+  - resolucao de DNS: inalterada por troca de porta
+  - backend 8766: permanece inalterado em 127.0.0.1
+  - Grafana em 127.0.0.1:3000: nao conflita (endereco distinto)
+  - Loki: nao instalado, 3100 livre, irrelevante
+  - timers e lab_ops.py: nenhum reescreve o Caddyfile
+  - rollback: procedimento documentado e de baixo risco
+
+================================================================================
+FIM DO RELATORIO — MEDUSA-PORT-5080-DIAG-01
+Nenhuma alteracao de configuracao foi executada nesta auditoria.
+================================================================================

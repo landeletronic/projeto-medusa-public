@@ -1,0 +1,219 @@
+================================================================================
+MEDUSA-C1-ARCHITECTURE — PROJETO TECNICO (C1.2 + C1.3)
+================================================================================
+
+Projeto ....: Caribbean Pirates GPT — Davy-Jones + Medusa
+Servidor ....: medusa (Ubuntu 26.04.1 LTS)
+Data ........: 2026-10-14
+Base ........: MEDUSA-C1-AUDIT (mesma data)
+Escopo ......: Cadastro Universal + nomes amigaveis (fundacao C1/C2)
+
+================================================================================
+1. MAPA DAS ENTIDADES ATUAIS (C1.3 item 1)
+================================================================================
+
+  auth_users(id, username UNIQUE, password_hash, role, enabled, blocked, ...)
+    <- contas de LOGIN (2). NAO confundir com pessoas cadastradas.
+  auth_sessions(id, user_id, token_hash UNIQUE, origin, secure, ...) 
+  auth_audit_events(id, event, user_id, username, actor, created, ...)
+  auth_job_owners(job_id PK, user_id)
+  jobs(id PK 32-hex, kind, payload JSON, state, attempts, ..., idem UNIQUE)
+    kinds: agent, document_ocr (payload.document_id 32-hex), document_docx,
+           legal_review, memory_add, ingest, ...
+  Mem0: Qdrant davy_jones_mem0_v1 (vetores) + history.sqlite3 (eventos)
+  Arquivos: data/document_ocr/<document_id>/{manifest.json,original/,ocr/}
+
+  Relacionamentos atuais: sessoes->usuarios (user_id), owners job->usuario,
+  jobs OCR->document_id (payload + pasta), DOCX snapshot->OCR jobs (job IDs).
+
+================================================================================
+2. MODELO CONCEITUAL FUTURO (C1.3 item 2)
+================================================================================
+
+  PERSON (id estavel interno, KIND PF|PJ, display/legal/social names, status,
+          created/updated, history)
+    |--< IDENTIFIER (tipo CPF|CNPJ|RG|..., valor, verified) [0..n]
+    |--< ROLE (papel + contexto + vigencia) [0..n]
+    |       papeis: CLIENT, COUNTERPARTY, LAWYER, REPRESENTATIVE,
+    |               WITNESS, EXPERT, OTHER (extensivel por CHECK)
+    |--< DOC_LINK >-- DOC_LABEL [0..n, so explicitos]
+  DOC_LABEL (id, document_id tecnico, job_id origem, friendly_name, doc_type,
+             origin, ocr_state, review_state, history)
+    |--< DOC_LINK (person_id, state CONFIRMED|PENDING|DISPUTED, history)
+  DOSSIER / LAWSUIT (FUTURO, nao implementado): referencia person_id + role +
+  doc_label_id. Nenhuma tabela criada agora; o modelo nao impede.
+
+  Principios: papel nao e coluna da pessoa; pessoa nao e usuario; rotulo nao e
+  identidade; nenhum vinculo automatico por nome/CPF-OCR; sem delete fisico.
+
+================================================================================
+3. MODELO LOGICO RELACIONAL (C1.3 itens 3-4)
+================================================================================
+
+  Banco: SQLite jobs.sqlite3 (mesmo arquivo). Prefixo registry_*. Sem FK
+  declaradas (padrao do codigo; integridade via aplicacao + UNIQUE).
+
+  registry_persons(
+    id TEXT PRIMARY KEY,                    -- uuid4 hex, nao derivado do nome
+    kind TEXT NOT NULL CHECK(kind IN ('PF','PJ')),
+    display_name TEXT NOT NULL,             -- nome de apresentacao
+    legal_name TEXT,                        -- nome civil / razao social
+    social_name TEXT,                       -- nome social / fantasia
+    status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','INACTIVE')),
+    created REAL NOT NULL, updated REAL NOT NULL)
+  CREATE INDEX registry_persons_name_idx ON registry_persons(display_name);
+  CREATE INDEX registry_persons_kind_idx ON registry_persons(kind);
+
+  registry_identifiers(
+    id TEXT PRIMARY KEY, person_id TEXT NOT NULL, id_type TEXT NOT NULL
+    CHECK(id_type IN ('CPF','CNPJ','RG','PASSPORT','OTHER')),
+    id_value TEXT NOT NULL,                 -- so digitos p/ CPF|CNPJ
+    verified INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL,
+    UNIQUE(id_type, id_value))
+  Regras: CPF 11 digitos + digitos verificadores mod11; CNPJ 14 + mod11;
+  formatos com pontuacao sao normalizados (so digitos); RG/PASSPORT/OTHER
+  livres (min 3 chars). Duplicado global -> 409 conflito, sem fusao.
+
+  registry_roles(
+    id TEXT PRIMARY KEY, person_id TEXT NOT NULL, role TEXT NOT NULL
+    CHECK(role IN ('CLIENT','COUNTERPARTY','LAWYER','REPRESENTATIVE',
+                   'WITNESS','EXPERT','OTHER')),
+    context TEXT NOT NULL DEFAULT '', started REAL, ended REAL,
+    created REAL NOT NULL,
+    UNIQUE(person_id, role, context))
+  Nesta etapa: escrita limitada a role=CLIENT (outros retornam 400 com mensagem
+  de pendencia futura). Leitura lista todos.
+
+  registry_person_history(
+    id TEXT PRIMARY KEY, person_id TEXT NOT NULL, op TEXT NOT NULL,
+    before_json TEXT, after_json TEXT, actor_id TEXT, actor_username TEXT,
+    ip TEXT NOT NULL, created REAL NOT NULL)
+  CREATE INDEX registry_person_history_person_idx ON registry_person_history(person_id);
+
+  registry_doc_labels(
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL UNIQUE,       -- id tecnico OCR (uuid hex)
+    job_id TEXT,                            -- job de origem (informativo)
+    friendly_name TEXT NOT NULL,            -- rotulo (1..120 chars)
+    doc_type TEXT,                          -- identification|residence|...
+    origin TEXT NOT NULL DEFAULT 'manual',
+    ocr_state TEXT, review_state TEXT,      -- espelhos informativos
+    created REAL NOT NULL, updated REAL NOT NULL)
+
+  registry_doc_label_history(
+    id TEXT PRIMARY KEY, doc_label_id TEXT NOT NULL, op TEXT NOT NULL,
+    before_json TEXT, after_json TEXT, actor_id TEXT, actor_username TEXT,
+    ip TEXT NOT NULL, created REAL NOT NULL)
+
+  registry_doc_person_links(
+    id TEXT PRIMARY KEY, doc_label_id TEXT NOT NULL, person_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('CONFIRMED','PENDING','DISPUTED')),
+    created REAL NOT NULL, updated REAL NOT NULL,
+    UNIQUE(doc_label_id, person_id))
+
+  Cardinalidades: person 1-n identifiers; person 1-n roles; person 1-n history;
+  doc_label 1-1 document_id; doc_label 1-n history; doc_label n-n person via
+  links (state explicito). Dossie/processo: 0 (futuro).
+
+================================================================================
+4. ESTRATEGIA DE MIGRACAO ADITIVA (C1.3 item 5)
+================================================================================
+
+  Funcao migrate_registry(store): 7x CREATE TABLE IF NOT EXISTS + 4x CREATE
+  INDEX IF NOT EXISTS, dentro de BEGIN IMMEDIATE, chamada no Registry.__init__
+  (padrao HumanAuth/migrate). Idempotente: reexecucao segura (verificada em
+  teste dedicado). Nenhum ALTER/DROP em tabelas existentes. Rollback de codigo
+  deixa tabelas inertes (sem dano, sem perda).
+  Validacao de CPF/CNPJ: normalizacao + mod11 em Python puro (sem dependencias).
+
+================================================================================
+5. PLANO DE INTEGRACAO OCR/DOCX (C1.3 item 6)
+================================================================================
+
+  DOC_LABELS: label por document_id; validacao de existencia via jobs
+  (payload.document_id) ou manifest.json; hash/conteudo/proveniencia intactos;
+  arquivos fisicos nunca renomeados.
+  LINKS pessoa<->documento: criacao exige person_id + doc_label_id existentes e
+  confirmacao humana explicita (flag no POST); estados CONFIRMED/PENDING/
+  DISPUTED; sem inferencia por OCR.
+  DOCX: endpoint GET /registry/documents/ocr-completed lista jobs OCR
+  succeeded com {job_id, document_id, document_type, friendly_name|null,
+  approved_fields}; UI preenche o datalist existente (valor=job_id) com rotulos
+  amigaveis. Contrato validate_selection/generate INALTERADO.
+  Se links nao forem implementaveis com seguranca: entregar cadastro + rotulos
+  sem links (PARTIAL documentado). [Na implementacao desta etapa, links foram
+  entregues com confirmacao explicita — ver relatorio de implementacao.]
+
+================================================================================
+6. MODELO DE PERMISSOES (C1.3 item 7)
+================================================================================
+
+  Todas as rotas /registry/* exigem human_admin() (ADMIN autenticado via proxy
+  + sessao + CSRF, mesmo padrao de /admin/users). USER recebe 403; menu
+  Cadastro oculto para USER (presentacional; servidor e autoridade).
+  Sem ACL por registro nesta etapa (RBAC atual so tem ADMIN|USER).
+  PENDENCIA REGISTRADA: leitura USER futura exige ACL por registro ou visao
+  filtrada — fora deste escopo. Nenhum privilegio existente foi ampliado.
+
+================================================================================
+7. BACKUP E ROLLBACK (C1.3 itens 8-9)
+================================================================================
+
+  BACKUP: (a) sqlite3 backup API para jobs.sqlite3 (consistente com WAL e
+  conexoes concorrentes; sem copiar arquivo quente); (b) cp -a do codigo
+  alterado; (c) SHA-256 + metadados; (d) diretorio restrito 700.
+  ROLLBACK: restaurar codigo; tabelas registry_* permanecem (inertes);
+  registros criados na janela sao preservados (nao sobrescrever banco com
+  backup antigo); validar servicos. Se recuperacao automatica arriscar dados:
+  RECOVERY_MANUAL_REVIEW_REQUIRED (nao ocorreu).
+
+================================================================================
+8. PLANO DE TESTES (C1.3 item 10)
+================================================================================
+
+  tests/test_registry.py (unittest, DB temporario, Store+Registry, sem
+  producao): PF, PJ, busca, edicao, historico, homonimos, sem CPF/CNPJ,
+  duplicado-sem-fusao, USER 403, label, rename, tech-id preservado, links,
+  idempotencia da migracao, validacao CPF/CNPJ.
+  Vivos (token admin loopback, sem senhas humanas): CRUD persons, busca,
+  doc labels, links, OCR-completed, RAG/Mem0/health sem regressao, TLS 5080,
+  portas 3000/3443, layout/responsivo/teclado, logs sem PII (grep).
+  Dados 100% sinteticos ("Pessoa Teste", CPF e CNPJ de sequencias de teste
+  com digitos verificadores validos — nao pertencem a pessoas reais).
+
+================================================================================
+9. LIMITACOES E RISCOS RESIDUAIS (C1.3 item 11)
+================================================================================
+
+  L1: sem delete fisico (INACTIVE apenas) — proposital.
+  L2: sem merge de duplicados (manual futuro).
+  L3: sem importacao automatica de OCR (manual futuro).
+  L4: USER sem acesso (pendencia ACL).
+  L5: busca por LIKE (sem FTS) — suficiente na escala da fundacao.
+  L6: links exigem confirmacao humana explicita.
+  R1: PII em SQLite 600/700 — acesso root ao host expoe (risco herdado).
+  R2: tabelas novas ficam apos rollback de codigo (inertes, documentado).
+  R3: validacao CPF/CNPJ sintatica, nao cadastral (nao consulta receita).
+
+================================================================================
+10. GATES — VEREDITO PARA IMPLEMENTACAO
+================================================================================
+
+  [x] Dados existentes preservados ......... migracao so ADICIONA tabelas
+  [x] Sem migracao destrutiva ............... nenhum ALTER/DROP
+  [x] Identificadores inalterados ............ document_id/job_id/hash intactos
+  [x] Compativel OCR/DOCX .................... contratos intactos
+  [x] Seguranca dos registros ................ SQLite 600/700, ADMIN-only, sem PII em logs
+  [x] Sem ampliacao de permissoes ............ USER continua sem acesso
+  [x] Backup consistente validado ............ sqlite3 backup API + recuperabilidade testada
+  [x] Migracoes idempotentes ................. teste de reexecucao
+  [x] Testes isolados antes da ativacao ...... unittest em DB temporario
+  [x] Recuperacao segura ..................... rollback.sh, sem overwrite de banco
+  [x] Sem impacto RAG/Mem0/infra ............. nenhum write nesses sistemas
+
+  Nenhum gate falhou. IMPLEMENTACAO AUTORIZADA PELOS CRITERIOS.
+  (Nao e C1_AUDIT_COMPLETE_IMPLEMENTATION_BLOCKED.)
+
+================================================================================
+FIM — MEDUSA-C1-ARCHITECTURE
+================================================================================

@@ -1,0 +1,226 @@
+================================================================================
+MEDUSA-UI-DESIGN-R2 — REFINAMENTO VISUAL DA PAGINA INICIAL
+================================================================================
+
+Projeto ....: Caribbean Pirates GPT — Medusa + Davy-Jones
+Servidor ....: medusa (Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic)
+Interface ...: https://medusa.escritorio.local:5080
+Referencia ..: MEDUSA-UI-DESIGN-R1 (validada)
+Data ........: 2026-10-14, 19:20 - 19:24 (-03:00)
+Executor ....: tlandskron (uid=1000), sudo NOPASSWD
+Escopo ......: 2 ajustes (R2.1 grade 3x2, R2.2 remocao de link redundante)
+
+CLASSIFICACAO FINAL: UI_DESIGN_R2_SERVER_VALIDATED
+
+Rollback: NAO EXECUTADO (nenhuma falha, nenhuma regressao)
+Somente index.html foi modificado. Nenhum outro arquivo foi tocado.
+
+================================================================================
+1. DIAGNOSTICO INICIAL
+================================================================================
+
+1.1 TEMPLATES E ARQUIVOS ATIVOS
+  A pagina inicial e servida de /home/tlandskron/davy-jones/app/index.html
+  (lido no startup, davy.py:310). Nao ha template engine nem arquivos
+  separados por secao: todo o HTML, CSS e JS vivem nesse arquivo unico.
+
+1.2 GRADE DE STATUS ATUAL (pre-R2)
+  Regra unica: .cards{display:grid;grid-template-columns:
+    repeat(auto-fit,minmax(190px,1fr));gap:10px}
+  Comportamento: numero de colunas variavel conforme a largura — sem garantia
+  de 3x2. A classe .cards e compartilhada por #dependencies (status) e
+  #tool-catalog (ferramentas).
+
+1.3 ORDEM DOS SEIS CARTOES (chamadas dependency() em statuses(), confirmada)
+  1. Davy-Jones
+  2. Medusa · corpus
+  3. Workspace
+  4. RAG Worker / Docling
+  5. Mem0
+  6. Qdrant / Ollama
+  Os cartoes sao criados DINAMICAMENTE via dependency() na ordem acima, apos
+  Promise.allSettled de /health, /rag/status e /memory/status. A ordem
+  coincide exatamente com a distribuicao pedida (linhas 1-3 e 4-6).
+
+1.4 LINK REDUNDANTE LOCALIZADO
+  <p class="muted"><a href="#diagnostico" data-view="diagnostico"
+  id="goto-diag">Abrir Diagnóstico do sistema (Administração)</a></p>
+  Ocorrencias: 1 (dentro de #status-home). Entrada correspondente no menu
+  lateral: presente (data-view="diagnostico", grupo Administração).
+
+1.5 REGRAS RESPONSIVAS EXISTENTES
+  @media(max-width:700px), @media(max-width:900px),
+  @media(prefers-reduced-motion:reduce) — todas preservadas.
+
+1.6 SELETORES R1
+  Roteador R1_VIEWS, r1Show/r1Current, #side-nav, #nav-toggle, #nav-admin,
+  #view-diagnostics, #diag-summary, #status-details (unico). Todos preservados.
+
+1.7 ARQUIVOS QUE PRECISAM DE MODIFICACAO
+  Conclusao: SOMENTE index.html. Nenhum outro arquivo precisa ser tocado:
+  a grade e CSS puro e o link e HTML estatico. Nenhuma logica JS precisa mudar
+  (as referencias restantes a goto-diag sao tolerantes a nulo — ver 3.3).
+
+================================================================================
+2. BACKUP OBRIGATORIO
+================================================================================
+
+DIRETORIO (novo, sem sobrescrever o backup R1)
+  /home/tlandskron/backups/ui-design-r2-20261014-192015 (root:root, 700)
+  index.html.pre-r2  80.288 B  (copia fiel do estado R1)
+  rollback.sh        executavel, modo 700 (restaura + restart + verifica)
+
+HASHES
+  index.html estado R1  d27b03d9cfc02e9f4a5eebb31d84d4a7cee243cf6d2c54e72a3dffe4adcccde8
+  index.html pos-R2     0fe039ff2259e228be827d933bc90633050fc0e4a629b362f3521bd6d6b83fb8
+  copia de backup      d27b03d9... (identica ao estado R1)
+
+METADADOS PRESERVADOS: owner tlandskron:tlandskron, mode 644.
+
+================================================================================
+3. ALTERACOES IMPLEMENTADAS
+================================================================================
+
+3.1 R2.1 — GRADE 3x2 (somente CSS, 7 linhas adicionadas)
+  /* MEDUSA-UI-DESIGN-R2: grade 3x2 do status operacional (somente #dependencies).
+     Nao afeta #tool-catalog nem outros .cards. */
+  #dependencies{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  #dependencies .card{min-width:0;overflow-wrap:anywhere}
+  @media(max-width:1100px){#dependencies{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:700px){#dependencies{grid-template-columns:minmax(0,1fr)}}
+
+  DECISOES:
+  - Seletor #dependencies (ID) em vez de .cards: especificidade maior que a
+    regra original, sem afetar #tool-catalog, que continua com auto-fit.
+  - minmax(0,1fr): colunas uniformes que acompanham a largura do painel;
+    min-width:0 + overflow-wrap evita corte, sobreposicao e overflow.
+  - Breakpoints: 1100 px (2 colunas, tablet/intermediario) e 700 px (1 coluna,
+    alinhado ao breakpoint existente de 700 px). Com o menu recolhido ha MAIS
+    espaco, portanto as mesmas regras valem — testado nos dois estados por
+    construcao (media queries por viewport, nao por estado do menu).
+
+3.2 R2.2 — LINK REMOVIDO (somente HTML, 1 elemento)
+  Removido de #status-home:
+    <p class="muted"><a ... id="goto-diag">Abrir Diagnóstico do sistema
+    (Administração)</a></p>
+  Preservado: entrada do menu lateral, rota #diagnostico, gate ADMIN,
+  conteudo tecnico, endpoints, testes. Nenhuma autorizacao foi alterada.
+  O diff pre-R2 vs pos-R2 contem EXATAMENTE essas duas mudancas e nada mais
+  (verificado por `diff` integral no log).
+
+3.3 COMPATIBILIDADE COM O JS R1
+  Restam 2 referencias a goto-diag no JS (r1Show e r1Admin), ambas na forma
+  `const gd=document.getElementById('goto-diag');if(gd)...` — tolerantes a
+  elemento ausente. Nenhuma alteracao JS foi necessaria. O roteador, o toggle
+  do menu, o gate ADMIN e o resumo de diagnostico funcionam sem o link.
+
+================================================================================
+4. RESTRICOES RESPEITADAS
+================================================================================
+
+  Nao alterado (verificado por mtime e por diff):
+  autenticacao, contas, SQLite/PostgreSQL/Redis, Caddy/certificados/portas,
+  firewall/Tailscale, Mem0/Qdrant/Ollama, RAG/OCR/DOCX, endpoints de status,
+  login, /admin/users, demais modulos, VM/containers.
+  Nenhum cartao removido. Nenhuma funcionalidade criada. Nenhum framework ou
+  dependencia instalado.
+
+================================================================================
+5. VALIDACAO PRE-ATIVACAO
+================================================================================
+
+  Link redundante removido da home .................. OK
+  Diagnostico preservado no menu ................... OK
+  status-details unico ............................. OK
+  Botao Atualizar status ........................... OK
+  Grade desktop 3 colunas .......................... OK
+  Cards sem overflow ............................... OK
+  Grade tablet 2 colunas ........................... OK
+  Grade mobile 1 coluna ............................ OK
+  Ordem dos 6 cartoes .............................. OK
+  tool-catalog sem override ........................ OK
+  JS balanceado / node --check ..................... OK
+
+  NOTA: uma checagem auxiliar ("auth/login em index.html") falhou por
+  expectativa incorreta do script — o POST de login vive em auth_views.py
+  (pagina /login), nunca existiu em index.html. Confirmado que o arquivo
+  esta correto; nao e regressao.
+
+================================================================================
+6. APLICACAO CONTROLADA
+================================================================================
+
+  systemctl --user restart davy-jones.service (PAGE lido no startup)
+  PID antes ....... 1948962
+  PID depois ...... 1961871
+  Estado .......... active
+  /health ......... 200
+  Falhas .......... 0
+  Downtime ........ ~4 s (somente Caddy -> 8766)
+
+================================================================================
+7. TESTES POSTERIORES (nao destrutivos, sem credenciais)
+================================================================================
+
+  1. HTTPS 5080 responde .......................... OK (302 sem sessao, ssl=0)
+  2. Pagina inicial carrega ....................... OK (HTML servido ==
+     arquivo, byte-a-byte)
+  3. Seis cartoes presentes e em ordem ............ OK
+  4. Grade 3x2 no desktop ......................... OK (regra servida;
+     confirmacao de pixels no Chrome do Windows pendente)
+  5. Adaptacao a telas menores .................... OK (regras servidas;
+     confirmacao de pixels pendente)
+  6. Menu lateral funcional ....................... OK (inalterado)
+  7. Recolhimento sem quebrar a grade ............. OK (por construcao;
+     confirmacao visual pendente)
+  8. Atualizar status ............................. OK (botao + statuses()
+     intactos)
+  9. Estados dinamicos ............................ OK (dependency() intacto;
+     sem indicador estatico)
+  10. Link redundante ausente na home ............. OK
+  11. Diagnostico permanece no menu ............... OK
+  12. Rota protegida por RBAC ..................... OK (/auth/me 401 sem
+      sessao; Origin estranha 403; servidor inalterado)
+  13. Alterar senha e usuarios presentes .......... OK (links intactos)
+  14. Logout disponivel ........................... OK (humanLogout intacto)
+  15. Portas 3000 e 3443 preservadas .............. OK (/login 200 nas tres)
+  16. Demais servicos sem regressao ............... OK (0 falhas,
+      9 containers, hardening 1024, contas intactas)
+
+  Nenhum login automatizado. Nenhuma sessao criada ou modificada por esta
+  etapa (o crescimento de 12 para 15 sessoes decorre do uso real do
+  administrador, com LOGIN_SUCCESS registrados em 17:33 e 18:54).
+
+================================================================================
+8. INCIDENTES
+================================================================================
+
+  Nenhum incidente. Sem rollback, sem erro de sintaxe, sem 502, sem falha de
+  servico. A unica "falha" registrada foi a expectativa incorreta do script
+  de validacao (secao 5), sem qualquer efeito no sistema.
+
+================================================================================
+9. PENDENCIAS (Chrome do Windows, administrador)
+================================================================================
+
+  P1 Confirmar a grade 3x2 em desktop (linhas 1-3 e 4-6 na ordem pedida).
+  P2 Reduzir a janela e confirmar 2 colunas e depois 1 coluna.
+  P3 Repetir P1-P2 com o menu recolhido.
+  P4 Confirmar ausencia do link na home e presenca no menu Administração.
+  P5 Confirmar que os cartoes refletem estados reais (Atualizar status).
+
+================================================================================
+10. ESTADO FINAL
+================================================================================
+
+  Arquivo modificado: index.html (1) — 80.288 -> 80.587 bytes (+299)
+  Backup: /home/tlandskron/backups/ui-design-r2-20261014-192015
+  Servicos: todos active, 0 falhas, 9 containers, hardening 1024
+  Contas: tlandskron ADMIN e tiago.adv USER, ambas ativas e inalteradas
+
+CLASSIFICACAO FINAL: UI_DESIGN_R2_SERVER_VALIDATED
+
+================================================================================
+FIM — MEDUSA-UI-DESIGN-R2
+Encerrar apos concluir R2. Nenhuma R3 iniciada.
+================================================================================

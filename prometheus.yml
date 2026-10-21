@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    host: medusa
+    project: caribbean-pirates-gpt
+
+scrape_configs:
+  # Metricas do host (CPU, RAM, disco, rede, systemd) + cgroups dos containers.
+  # O node-exporter esta em pid: host, entao enxerga os cgroups dos containers.
+  - job_name: node
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          instance: medusa-node
+
+  # Metricas do proprio Prometheus
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          instance: medusa-prometheus

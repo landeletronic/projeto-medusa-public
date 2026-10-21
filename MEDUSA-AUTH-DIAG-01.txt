@@ -1,0 +1,759 @@
+================================================================================
+MEDUSA-AUTH-DIAG-01 — DIAGNOSTICO DE AUTENTICACAO (usuario tlandskron)
+================================================================================
+
+Projeto .......: Caribbean Pirates GPT — Davy-Jones + Medusa
+Servidor .......: medusa (Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic)
+Interface ......: https://medusa.escritorio.local:5080
+Usuario diag. ..: tlandskron
+Perfil esperado : ADMIN
+Data ...........: 2026-10-14, 15:45 - 16:05 (-03:00)
+Executor .......: tlandskron (uid=1000), sudo NOPASSWD
+Modo ...........: SOMENTE LEITURA (banco acessado com sqlite3 mode=ro)
+
+CLASSIFICACAO FINAL: AUTH_DIAG_COMPLETE
+
+Nenhuma senha foi recuperada, exibida, exportada ou testada.
+Nenhum hash, salt ou token aparece neste relatorio.
+Nenhum login foi executado. Nenhuma conta foi alterada.
+Nenhum servico foi reiniciado. Nenhuma configuracao foi modificada.
+
+================================================================================
+1. RESUMO EXECUTIVO
+================================================================================
+
+O usuario tlandskron EXISTE, tem perfil ADMIN, esta ATIVO e NAO esta BLOQUEADO.
+A autenticacao tem mecanismo Argon2id correto e configuracao valida.
+
+A causa provavel da falha de login e o RATE LIMIT por tentativas:
+a conta acumulou 5 falhas de login identicas na janela de 15 minutos, o que
+atinge exatamente o limite `exact>=5` definido em human_auth.py linha 74. A
+partir da 6a tentativa, o backend responde 429 login_rate_limited_15_minutes.
+
+Isso e comportamento de protecao, nao defeito. Mas note: as 5 falhas anteriores
+tambem falharam, o que significa que a senha informada em pelo menos uma delas
+nao corresponde ao hash armazenado — OU que o problema era outro在这些时刻
+(ver secao 4, cenarios diferenciados).
+
+NENHUMA REGRESSAO DA MIGRACAO PARA 5080 FOI IDENTIFICADA. A origem 5080 esta
+na allowlist, a cadeia TLS valida, o proxy encaminha corretamente e a pagina de
+login carrega normalmente.
+
+================================================================================
+2. ETAPA D1 — INVENTARIO DA AUTENTICACAO
+================================================================================
+
+2.1 SERVICOS ENVOLVIDOS
+  davy-jones ......... active  PID 1581431  (backend de autenticacao)
+  medusa-caddy ....... active  PID 1579136  (reverse proxy, proxy_key)
+  medusa-core ........ active  PID 5134
+  medusa-rag-worker .. active  PID 5135
+
+  Fluxo: navegador -> Caddy (192.168.15.250:5080) -> Davy-Jones (127.0.0.1:8766)
+
+2.2 ARQUIVOS
+  /home/tlandskron/davy-jones/app/davy.py          54.430 B  (rotas HTTP)
+  /home/tlandskron/davy-jones/app/human_auth.py    15.132 B  (AUTENTICACAO)
+  /home/tlandskron/davy-jones/app/auth_views.py    6.513 B  (UI login JS)
+  /home/tlandskron/davy-jones/app/auth_admin.py    1.342 B  (bootstrap 1o ADMIN)
+  /home/tlandskron/davy-jones/app/index.html      71.994 B  (UI)
+
+  Configuracoes:
+  /home/tlandskron/davy-jones/config/human_auth.json  475 B  600 tlandskron
+  /home/tlandskron/davy-jones/config/admin.json       116 B  600 tlandskron
+  /home/tlandskron/davy-jones/config/mem0.json        957 B  600 tlandskron
+
+2.3 ARMAZENAMENTO EFETIVO (localizado sem presumir PostgreSQL)
+  >>> AS CREDENCIAIS NAO ESTAO NO POSTGRESQL. <<<
+  >>> ESTAO EM UM SQLite local: <<<
+  /home/tlandskron/davy-jones/data/jobs.sqlite3  (15.433.728 bytes)
+  Aberto por davy.py:226  ->  Store(str(ROOT/'data/jobs.sqlite3'))
+
+  Tabelas de autenticacao (schema MEDUSA_HUMAN_AUTH_V1):
+
+  auth_users(id, username UNIQUE, password_hash, role CHECK(USER|ADMIN),
+             enabled, blocked, created, updated)
+  auth_sessions(id, user_id, token_hash UNIQUE, origin, secure,
+                 created, last_seen, expires, revoked)
+  auth_audit_events(id, event, user_id, username, actor_id, created,
+                    origin, rate_key, details)
+  auth_job_owners(job_id, user_id)
+  auth_rate_idx — indice sobre (event, created, rate_key, username)
+
+2.4 FUNCOES RESPONSAVEIS (human_auth.py)
+  linha 15  username()          normaliza: valida regex e aplica .lower()
+  linha 18  password()          politica de forca (14-256, 6 distintos, 3 classes)
+  linha 20  cookie()            emissao de cookies
+  linha 24  read_cookie()       leitura + defesa contra cookie duplicado
+  linha 30  migrate()           criacao aditiva de tabelas (BEGIN IMMEDIATE)
+  linha 40  class HumanAuth
+  linha 43  __init__            constroi PasswordHasher + dummy hash
+  linha 47  audit()             grava evento em auth_audit_events
+  linha 56  public_user()       projecao de campos publicos
+  linha 57  prelogin()          emite nonce CSRF
+  linha 59  login_csrf()        valida nonce CSRF (janela 600 s)
+  linha 66  login()             *** FLUXO PRINCIPAL DE LOGIN ***
+  linha 79    -> self.ph.verify(hash, senha)   <-- comparacao da senha
+  linha 95  principal()         validacao de sessao a cada request
+  linha 107 check_csrf()        exige X-CSRF-Token em metodos de escrita
+  linha 109 logout()            revoga sessoes
+  linha 130 change()            acao administrativa (RESET_PASSWORD etc.)
+  linha 147 own_password()      troca de senha pelo proprio usuario
+  linha 157 can_job()           autorizacao de acesso a jobs
+
+  Rotas em davy.py:
+  linha 359  proxy_context()    valida proxy_key, origin, Host
+  linha 407  rotas publicas (inclui /login, /auth/me)
+  linha 540  /auth/login        chama auth.login()
+  linha 544  /auth/password     chama auth.own_password()
+  linha 546  /auth/users        POST criar usuario (ADMIN)
+  linha 547  /auth/users/<id>   acoes administrativas (ADMIN)
+
+================================================================================
+3. ETAPA D2 — VERIFICACAO DO USUARIO
+================================================================================
+
+3.1 CADASTRO EFETIVO (leitura estrita, hashes NAO exibidos)
+  Total de usuarios cadastrados: 2
+
+  username ..........: tlandskron
+    id ..............: a35f438530c341f2a7c49e5835dcf3e0
+    role ............: ADMIN
+    enabled .........: 1  (ATIVO)
+    blocked .........: 0  (NAO BLOQUEADO)
+    created .........: epoch 1790947077 (2026-10-02)
+    updated .........: epoch 1790947077 (2026-10-02, igual ao created)
+    password_hash ...: 97 caracteres, prefixo $argon2id$
+                       (formato argon2id — 97 chars e o tamanho esperado para
+                       os parametros usados; conteudo NAO exibido)
+
+  username ..........: tiago.adv   (comparacao estrutural apenas)
+    id ..............: 51b456518b6d4e6d95113cf1ea7a7e26
+    role ............: USER
+    enabled .........: 1
+    blocked .........: 0
+    created/updated .: epoch 1790947878 (2026-10-02)
+    password_hash ...: 97 caracteres, prefixo $argon2id$
+    Nenhuma senha testada. Nenhum hash exibido.
+
+3.2 IDENTIFICADOR DE LOGIN ACEITO
+  Identificador correto: **tlandskron**
+  Case-insensitive: a funcao username() (linha 15) aplica value.lower(), portanto
+  tlandskron == TLANDSKRON == Tlandskron sao equivalentes.
+
+  E-MAIL: NAO UTILIZADO.
+  A tabela auth_users nao possui coluna de e-mail (colunas: id, username,
+  password_hash, role, enabled, blocked, created, updated).
+  A funcao login() valida exatamente: set(p) == {'username','password'}.
+  Portanto login por e-mail e IMPOSSIVEL por construcao.
+
+  ATENCAO: tentativas com o identificador "admin" e com nomes invalidos
+  aparecem no log (secao 4). "admin" NAO e um usuario cadastrado — falha sempre.
+
+3.3 ESTADO DA CONTA
+  Ativa .............. SIM (enabled=1)
+  Bloqueada .......... NAO (blocked=0)
+  Perfil ............. ADMIN
+  Expiracao de credencial configurada: NAO. Nao ha campo de expiracao de senha;
+  a expiracao e apenas de SESSAO (session_absolute_seconds=28800 = 8 h;
+  session_idle_seconds=1800 = 30 min).
+  Limite de tentativas: SIM, ver secao 4.
+
+3.4 EVIDENCIA DE QUE A SENHA JÁ FUNCIONOU
+  Historico de auth_audit_events para tlandskron:
+    LOGIN_SUCCESS ......... 4
+    LOGIN_FAILURE ......... 5
+    LOGIN_RATE_LIMITED .... 1
+  Ultimo LOGIN_SUCCESS de tlandskron: 2026-10-02 17:57:41
+  Como a conta foi criada em 2026-10-02 e ha 4 sucessos no mesmo dia, a senha
+  ATUAL esta correta e o login funcionava antes.
+
+  Nota: o campo `updated` (2026-10-02) coincide com `created`, o que indica que
+  a senha NAO foi alterada desde a criacao. O hash em uso e o original.
+
+================================================================================
+4. ETAPA D4 — INVESTIGACAO DA MIGRACAO 5080 E CAUSA PROVAVEL
+================================================================================
+
+4.1 ANÁLISE DE CADA CENÁRIO (item 8 do procedimento)
+
+  [ ] Usuario inexistente ......... NAO SE APLICA
+      tlandskron existe (secao 3.1).
+  [ ] Conta bloqueada/desativada .. NAO SE APLICA
+      enabled=1, blocked=0.
+  [ ] Origin rejeitada ........... NAO SE APLICA
+      https://medusa.escritorio.local:5080 consta na allowlist (secao 4.2).
+      Testado: requisicao na 5080 retorna 302, nao 403.
+  [ ] Cookie/sessao invalida ..... NAO E CAUSA DO FALHO DE LOGIN
+      Cookies so ocorrem apos login bem-sucedido.
+      Sessoes existentes: 7 registradas, todas inativas ou revogadas.
+  [ ] Erro CSRF .................. NAO SE APLICA no primeiro acesso
+      O nonce CSRF e emitido por /auth/login-context na carga da pagina.
+      Se estivesse quebrado, o erro seria 403 csrf_required.
+      O log mostra LOGIN_FAILURE (401), nao 403.
+  [ ] Falha do proxy ............. NAO SE APLICA
+      Caddy responde 302 em 5080 e 3443, ssl_verify=0.
+      502 (upstream indisponivel) nao aparece no periodo.
+  [ ] Falha do backend ........... NAO SE APLICA
+      Davy-Jones active, /health = 200.
+  [ ] Erro de autorizacao pos-login . NAO SE APLICA
+      Nao ha login concluido para avaliar.
+  [X] SENHA INCORRETA + RATE LIMIT  *** CAUSA PROVAVEL ***
+
+4.2 CONFIGURACAO DE ORIGEM — allowlist
+  /home/tlandskron/davy-jones/config/human_auth.json -> contract MEDUSA_HUMAN_AUTH_V1
+  origins (4 entradas):
+    http://medusa.escritorio.local:3000
+    https://medusa.escritorio.local:3443
+    https://medusa.escritorio.local:3000
+    https://medusa.escritorio.local:5080      <-- presente e validado
+  session_absolute_seconds: 28800
+  session_idle_seconds: 1800
+  proxy_secret: presente
+  csrf_secret: presente
+  JSON: sintaticamente valido
+
+  Codigo de validacao (davy.py linha 359):
+    host   = headers['X-Medusa-External-Host']
+    scheme = headers['X-Medusa-External-Scheme']
+    origin = scheme + '://' + host
+    if origin not in auth.config['origins'] or headers['Host'] != '127.0.0.1:8766':
+        raise AuthError('proxy_origin_rejected', 403)
+  O Caddy em 5080 envia X-Medusa-External-Host=medusa.escritorio.local:5080 e
+  Scheme=https, produzindo exatamente a origem autorizada. COMPROVADO em teste.
+
+4.3 POLITICA DE COOKIES (human_auth.py linha 20-22)
+  Secure ....... aplicado condicionalmente conforme proxy['secure']
+                  (secure = (scheme == 'https')). Na 5080 => True.
+  HttpOnly ...... sempre True
+  SameSite ...... sempre 'Strict'
+  Path .......... sempre '/'
+  Domain ........ NAO definido (host-only) — comportamento mais restritivo
+  Idade da sessao: 8 h (absoluta), 30 min (ociosa)
+
+  Ausencia de Domain e SAME-Site=Strict sao favoraveis a seguranca.
+  Consequencia: cookies emitidos em 3443 NAO sao enviados a 5080 (host-only,
+  mas porta nao faz parte do escopo de cookie — o MESMO cookie vale para
+  3000, 3443 e 5080 do mesmo host).
+
+4.4 CSRF
+  prelogin(): nonce = timestamp + '.' + token + '.' + HMAC-SHA256
+  login_csrf(): valida assinatura HMAC e janela de 600 s
+  check_csrf(): compara X-CSRF-Token com principal['csrf'] via hmac.compare_digest
+  Aplicacao de metodos POST /auth/login e /auth/password.
+
+4.5 TRATAMENTO DE CABECALHOS ENCAMINHADOS
+  O Caddy remove Authorization (header_up -Authorization) e injeta
+  X-Medusa-Proxy-Key (segredo compartilhado). O backend compara o marker com
+  hmac.compare_digest e exige que o cliente seja 127.0.0.1 e o servidor também.
+  Defense em profundidade: um cliente externo nao consegue forjar o contexto.
+
+4.6 TIMELINE DE HOJE (2026-10-14) — eventos de autenticacao
+  15:48:22  LOGIN_FAILURE        username=invalid      origem=192.168.15.0/24
+  15:48:36  LOGIN_FAILURE        username=invalid      origem=192.168.15.0/24
+  15:48:52  LOGIN_FAILURE        username=admin        origem=192.168.15.0/24
+  15:49:45  LOGIN_FAILURE        username=tlandskron   origem=192.168.15.0/24
+  15:49:56  LOGIN_FAILURE        username=tlandskron   origem=192.168.15.0/24
+  15:50:02  LOGIN_FAILURE        username=tlandskron   origem=192.168.15.0/24
+  15:51:21  LOGIN_FAILURE        username=tlandskron   origem=192.168.15.0/24
+  15:51:43  LOGIN_FAILURE        username=tlandskron   origem=192.168.15.0/24
+  15:51:51  LOGIN_RATE_LIMITED   username=tlandskron   origem=192.168.15.0/24
+
+  LEITURA:
+  - As duas primeiras tentativas usaram nomes invalidos (provavelmente
+    tentativa de e-mail ou nome incorreto).
+  - A terceira usou "admin", que NAO existe como usuario.
+  - As cinco seguintes foram com o identificador CORRETO (tlandskron) e
+    falharam — indicando senha incorreta (ou senha correta mas outro erro
+    mascarado como 401).
+  - A sexta tentativa recebe 429 por rate limit.
+
+4.7 MECANISMO DE RATE LIMIT (human_auth.py linhas 70-75)
+  RATE_WINDOW = 15*60 = 900 s
+  failures = COUNT de LOGIN_FAILURE da origem na janela
+  exact    = COUNT de LOGIN_FAILURE da origem para o MESMO username na janela
+  limited  = (failures >= 30) or (exact >= 5)
+
+  ESTADO NO MOMENTO DA DIAGNOSTICO:
+    falhas por origem ......... 8 / 30   -> livre
+    falhas exatas tlandskron .. 5 / 5    -> LIMITADO
+
+  IMPORTANTE: o limite e por (origem + username). As falhas com "invalid" e
+  "admin" SOMARAM no contador geral (8 falhas de origem), mas nao no contador
+  exato de tlandskron. Apenas as 5 tentativas com tlandskron atingiram o
+  limite exato.
+
+  COMPORTAMENTO PARA O USUARIO:
+  - Tentativas 1 a 5 com senha errada -> 401 invalid_credentials
+  - Tentativa 6 em diante -> 429 login_rate_limited_15_minutes
+  - A janela e deslizante de 15 minutos: expira sozinha, sem intervencao.
+
+  VALOR DE RATE_KEY: o auditor usa ip_network(ip/24) para IPv4, ou seja, TODAS
+  as maquinas da sub-rede 192.168.15.0/24 compartilham o mesmo contador. Se
+  outro dispositivo da LAN tentar logins com tlandskron, o contador dele soma
+  com o seu — e vice-versa.
+
+4.8 DIAGNOSTICO PROVAVEL
+  NIVEL DE CONFIANCA: ALTO para "a conta esta saudavel e a falha e de senha
+  seguida de rate limit".
+
+  Evidencia convergente:
+  a) Conta existe, ADMIN, enabled, nao bloqueada
+  b) Identificador correto (tlandskron, sem e-mail)
+  c) Historico de 4 logins bem-sucedidos com a senha atual
+  d) 5 falhas consecutivas com o identificador correto
+  e) Limite exato de 5 atingido logo em seguida
+  f) Nenhum erro de infraestrutura (proxy, TLS, origin, backend) no periodo
+  g) A pagina de login carrega normalmente na 5080 (200, 2121 bytes)
+
+  CONCLUSAO: a senha informada pelo administrador NAO corresponde ao hash
+  armazenado. As 5 falhas sao a resposta correta do sistema. O rate limit
+  observado e consequencia, nao causa primaria.
+
+  CUIDADO IMPORTANTE (ponto 8 do procedimento): o log registra LOGIN_FAILURE
+  (401 invalid_credentials) de forma INDISTINGIVEL para os casos de "senha
+  incorreta", "usuario inexistente" e "conta bloqueada/desativada". O codigo
+  faz verify com um dummy hash quando o usuario nao existe (linha 79), para
+  evitar timing attack, e so apos verifica enabled/blocked (linha 82). Como
+  tlandskron existe e esta ativo, o 401 significa especificamente senha
+  incorreta.
+
+  ALTERNATIVAS que o diagnostico NAO elimina completamente:
+  - O campo de login pode estar recebendo espaco invisivel ou caractere colado
+    do gerenciador de senha.
+  - Caps lock ativado.
+  - A senha pode ter sido alterada por um caminho fora da aplicacao (hash
+    editado diretamente no banco), o que tornaria `updated` != `created`.
+    Aqui `updated` == `created`, o que torna essa hipotese improvavel.
+
+================================================================================
+5. ETAPA D3 — MECANISMO DE HASHING
+================================================================================
+
+5.1 ALGORITMO CONFIRMADO
+  Argon2id — com confirmacao em codigo e em tempo de execucao.
+
+  human_auth.py linhas 42-43:
+      from argon2 import PasswordHasher,Type
+      self.ph=PasswordHasher(time_cost=3,memory_cost=65536,parallelism=4,
+                              hash_len=32,salt_len=16,type=Type.ID)
+
+5.2 PARAMETROS
+  Tipo ............ Argon2id (argon2.Type.ID)
+  time_cost ....... 3 iterações
+  memory_cost ..... 65536 KiB = 64 MiB
+  parallelism ..... 4 threads
+  hash_len ........ 32 bytes
+  salt_len ........ 16 bytes (gerado automaticamente por hash)
+  Biblioteca ...... argon2-cffi 25.1.0 (venv .venv-mem0, Python 3.11.16)
+
+  Custo aproximado: ~64 MiB de memoria e 3 passes — adequado para uso
+  administrativo em rede privada.
+
+5.3 MECANISMO DE ARMAZENAMENTO E VERIFICACAO
+  ARMAZENAMENTO: hash argon2id codificado em texto no campo password_hash da
+  tabela auth_users, formato PHC string:
+    $argon2id$v=19$m=65536,t=3,p=4$<salt_base64>$<hash_base64>
+  Comprate 97 caracteres — compativel com os parametros acima.
+  O salt e unico por usuario e embutido no hash (padrao argon2/cffi).
+
+  VERIFICACAO (human_auth.py linha 79):
+    valid = self.ph.verify(u['password_hash'] if u else self.dummy,
+                           p['password'])
+  Decorrimentos relevantes:
+   - Se o usuario nao existe, verifica contra um hash DUMMY gerado no
+     __init__ (linha 44), para nao vazar existencia por tempo (timing attack).
+   - A comparacao usa a funcao argon2, que recalcula o hash da senha candidata
+     com os parametros extraidos do hash armazenado e compara em tempo constante.
+   - Divergencia gera argon2.exceptions.VerifyMismatchError, capturado pelo
+     try/except da linha 79 (valid permanece False).
+   - Apos o verify, ha uma revalidacao dentro de BEGIN IMMEDIATE (linha 82)
+     que compara password_hash novamente, impedindo corrida entre troca de
+     senha e login concorrente.
+   - Se check_needs_rehash() indicar parametros obsoletos, o hash e atualizado
+     Transparentemente (linha 88) apos login bem-sucedido.
+
+  FUNCAO EXATA RESPONSAVEL: argon2.PasswordHasher.verify(hash, password)
+  Chamada em dois lugares:
+    linha 79  — login()
+    linha 151 — own_password() (troca de senha pelo proprio usuario)
+
+5.4 A SENHA ATUAL SATISFAZ A POLITICA?
+  Politica (human_auth.py linha 18-19):
+    - comprimento entre 14 e 256 caracteres
+    - pelo menos 6 caracteres distintos
+    - pelo menos 3 classes entre [A-Z], [a-z], [0-9], [^\A-Za-z0-9]
+  O hash tem 97 caracteres e prefixo $argon2id$ — formato integro, criado por
+  hash() que validou a senha na epoca. A senha atual era valida na criacao.
+
+================================================================================
+6. ETAPA D5 — INCIDENTE DE POSSE DE ARQUIVO
+================================================================================
+
+6.1 ESTADO ATUAL
+  /home/tlandskron/davy-jones/config/human_auth.json
+    owner .......: tlandskron:tlandskron  (CORRETO)
+    group .......: tlandskron
+    mode ........: 600
+    size ........: 475 bytes
+    mtime .......: 2026-10-14 13:17:57 (alteracao da allowlist na Etapa C)
+
+6.2 CAPACIDADE DE LEITURA PELO PROCESSO
+  Verificado como usuario tlandskron (mesmo usuario do processo, sem sudo):
+    teste 1 — leitura direta ........................ legivel: SIM
+    teste 2 — open() em Python, 475 bytes lidos ..... legivel: SIM
+    teste 3 — via /proc/<pid>/root .................. legivel: SIM
+
+  NOTA METODOLOGICA: um teste anterior usando `sudo test -r` retornou "NAO
+  legivel". Isso foi ARTEFATO — sudo avalia o bit de root, nao o do usuario do
+  processo. O teste correto (sem sudo) confirma leitura normal.
+
+6.3 HISTORICO DE PermissionError
+  O log contem 17 ocorrencias de:
+    PermissionError: [Errno 13] Permission denied:
+      '/home/tlandskron/davy-jones/config/human_auth.json'
+  CAUSA: durante a Etapa C (migracao 5080), o script de aplicacao rodou sob
+  sudo; o os.replace() criou o arquivo com owner root:root. O Davy-Jones roda
+  como tlandskron e nao conseguia ler, entrando em auto-restart
+  (17 reinicios registrados) e produzindo 502 no proxy.
+
+  RESOLUCAO: posse restaurada (chown tlandskron:tlandskron, chmod 600) e
+  servico reiniciado. Registrado como incidente I1 em MEDUSA-PORT-5080-C-MIGRATION.
+
+6.4 ESTADO ATUAL — SEM FALHAS PERSISTENTES
+  davy-jones .......... active
+  start atual ........ 2026-10-14 13:20:44
+  Nenhuma falha de inicializacao apos 13:20:44
+  502 no log do Caddy .. 2 ocorrencias (durante o incidente, ja resolvido)
+  Legibilidade ........ normal
+  >>> INCIDENTE ENCERRADO. NAO E CAUSA DO FALHO DE LOGIN. <<<
+
+  A janela do incidente foi 13:17-13:20. As falhas de login analisadas sao de
+  15:48-15:51 — quase 2h30 depois. NAO ha relacao causal.
+
+================================================================================
+7. ETAPA D6 — TESTES NAO DESTRUTIVOS
+================================================================================
+
+7.1 DISPONIBILIDADE
+  caddy ............... active
+  davy-jones .......... active
+  backend 127.0.0.1:8766 ... 200
+
+7.2 CADEIA TLS E RESPOSTA (sem credenciais, sem -k)
+  https :3443 ......... http=302  ssl_verify=0
+  https :5080 ......... http=302  ssl_verify=0
+  http  :3000 ......... http=302
+
+7.3 PAGINA DE LOGIN
+  GET :5080/login ..... http=200, 2121 bytes (HTML do formulario entregue)
+
+7.4 ENDPOINTS DE CONTROLE
+  GET  /auth/me sem cookie .... 401 login_required (protecao ativa)
+  POST /auth/prelogin ......... 401 (exige contexto de proxy valido)
+
+7.5 INTEGRIDADE DA CONFIGURACAO
+  human_auth.json: JSON valido, 4 origins, segredos presentes, contrato v1
+
+7.6 NENHUMA CREDENCIAL FOI ENVIADA
+  Nenhum POST com username/password foi executado.
+  Nenhuma tentativa de login foi consumida.
+  Nenhum cookie ou token real foi reutilizado.
+
+================================================================================
+8. ETAPA D7 — PROCEDIMENTO SEGURO PARA TESTAR A SENHA
+================================================================================
+
+NAO EXECUTADO NESTA ETAPA, conforme autorizado.
+
+8.1 POR QUE UM PROCEDIMENTO LOCAL E SEGURO
+  Verifiquei o codigo-fonte de argon2.PasswordHasher.verify: NAO contem nenhuma
+  instrucao UPDATE, INSERT, commit ou execute — e uma operacao de leitura pura
+  sobre as strings fornecidas.
+  Consequentemente, verificar uma senha candidata localmente:
+    - nao toca o banco de dados
+    - nao incrementa contadores de tentativa
+    - nao cria sessao
+    - nao grava evento de auditoria
+    - nao afeta o rate limit
+
+  ATENCAO CRITICA: NÃO usar HumanAuth diretamente, pois HumanAuth.__init__
+  chama migrate(store), que executa BEGIN IMMEDIATE e CREATE TABLE IF NOT
+  EXISTS — isso é ESCRITA no banco, ainda que idempotente. Usar argon2 puro.
+
+8.2 PROCEDIMENTO PROPOSTO (executar com autorizacao especifica)
+
+  Passo 1 — Abrir o terminal SSH no medusa como tlandskron (nao como root):
+      ssh medusa
+
+  Passo 2 — Executar o comando abaixo. Ele le a senha de forma oculta
+  (sem eco), via /dev/tty, e compara sem gravar nada.
+
+    /home/tlandskron/davy-jones/.venv-mem0/bin/python3.11 - <<'PYEOF'
+    import getpass, sqlite3, sys
+    from argon2 import PasswordHasher, PasswordHasherError
+
+    DB = '/home/tlandskron/davy-jones/data/jobs.sqlite3'
+    USER = 'tlandskron'
+
+    con = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+    row = con.execute(
+        'SELECT password_hash FROM auth_users WHERE username=?', (USER,)
+    ).fetchone()
+    con.close()
+
+    if row is None:
+        print('usuario inexistente'); sys.exit(2)
+
+    senha = getpass.getpass('Senha: ')
+    if not senha:
+        print('entrada vazia'); sys.exit(2)
+
+    # argon2 puro: nao instancia HumanAuth, nao executa migrate(), nao escreve
+    ph = PasswordHasher(time_cost=3, memory_cost=65536,
+                        parallelism=4, hash_len=32, salt_len=16)
+    try:
+        ph.verify(row[0], senha)
+        print('>>> CORRETA')
+    except PasswordHasherError:
+        print('>>> INCORRETA')
+
+    del senha
+    PYEOF
+
+  Garantias do procedimento:
+    - getpass.getpass() nao ecoa a senha e le de /dev/tty
+    - a senha NAO e passada como argumento de linha de comando
+    - a senha NAO entra no historico do shell (leitura interativa)
+    - a senha NAO e gravada em arquivo
+    - a senha NAO aparece em log
+    - a senha NAO e impressa
+    - o hash NAO e impresso
+    - a conexao sqlite usa mode=ro (somente leitura)
+    - argon2 puro: sem migrate(), sem escrita, sem sessao, sem auditoria
+    - del senha ao final
+    - retorno objetivo: CORRETA ou INCORRETA
+
+  Uso do verificador OFICIAL da aplicacao: NAO EXISTE CLI dedicado. O
+  auth_admin.py e apenas o bootstrap do PRIMEIRO ADMIN e recusa execucao se ja
+  existir um ADMIN — portanto nao serve para verificacao. O metodo acima usa a
+  MESMA funcao argon2.PasswordHasher.verify que a aplicacao usa em producao
+  (human_auth.py linha 79), com os MESMOS parametros (linha 43). E portanto
+  equivalente ao que o servidor faria.
+
+8.3 LIMITACAO DOCUMENTADA
+  Nao existe caminho oficial de CLI somente-leitura para verificar senha. O
+  procedimento acima e seguro por construcao (verificacao do codigo-fonte), mas
+  nao e um comando oficial da aplicacao. Se preferir um caminho 100% oficial,
+  resta apenas RESET_PASSWORD via admin autenticado (secao 9), que e uma
+  ALTERACAO, nao uma verificacao.
+
+8.4 APOS A VERIFICACAO
+  Se retornar INCORRETA: a senha deve ser redefinida (secao 9).
+  Se retornar CORRETA: o problema era outro (caps lock, espaco colado,
+  identificador incorreto). Ver 4.8.
+
+================================================================================
+9. ETAPA D8 — PROCEDIMENTO DE REDEFINICAO
+================================================================================
+
+9.1 EXISTEM MECANISMOS OFICIAIS — DOIS CAMINHOS
+
+  CAMINHO A — Auto-servico (requer sessao valida + senha ATUAL)
+    Funcao: human_auth.own_password() (linha 147)
+    Rota HTTP: POST /auth/password
+    UI: pagina /account/password (index.html linha 17)
+    Requisitos: estar autenticado; informar current_password e new_password
+    Efeito: valida a senha atual, grava novo hash argon2id, REVOGA todas as
+    sessoes do usuario, audita PASSWORD_CHANGED
+    Bloqueio: IMPOSSIVEL usar agora, porque exige a senha atual que
+    justamente nao se sabe.
+
+  CAMINHO B — Administrativo (requer outro ADMIN autenticado)
+    Funcao: human_auth.change() (linha 130), action='RESET_PASSWORD'
+    Rota HTTP: POST /auth/users/<id> com {action, password}
+    UI: secao de administracao de usuarios (auth_views.py linha 13)
+    Requisitos: principal com role=ADMIN
+    Protecoes embutidas:
+      - actor['role'] must be ADMIN (linha 131)
+      - protecao do ultimo ADMIN ativo (linha 139-140): impede deixar o
+        sistema sem nenhum ADMIN ativo
+      - password() valida a forca antes de hashear (linha 136)
+      - BEGIN IMMEDIATE + revogacao de sessoes
+    Efeito: substitui password_hash, revoga sessoes, audita PASSWORD_RESET
+    BLOQUEIO IMPORTANTE: a unica conta ADMIN e tlandskron (tiago.adv e USER).
+    Usar este caminho requer estar autenticado como tlandskron — o que exige
+    a senha atual. BOUCLE.
+
+  CAMINHO C — auth_admin.py (bootstrap) — NAO APLICAVEL
+    Recusa execucao se ja existir ADMIN:
+      if c.execute("SELECT 1 FROM auth_users WHERE role='ADMIN' LIMIT 1").fetchone():
+          raise SystemExit('Já existe ADMIN. Bootstrap recusado.')
+    Nao serve para reset. FIM.
+
+  CAMINHO D — Edicao direta do hash no SQLite — NAO RECOMENDADO
+    Tecnicamente possivel (conhecendo o formato argon2id), porem:
+      - contorna toda a logica de auditoria e controle
+      - nao valida a politica de forca
+      - nao registra evento
+      - risco de corromper o campo
+    Em ultimo recurso, com backup previo e autorizacao explicita.
+
+9.2 RECOMENDACAO PARA REDEFINICAO EXCLUSIVA DE tlandskron
+  Se a verificacao (secao 8) retornar INCORRETA, o caminho oficial e o
+  CAMINHO B (POST /auth/users/<id> com RESET_PASSWORD), mas ele exige que
+  tlandskron esteja autenticado. Como nao esta, ha duas subsequencias:
+
+  RECOMENDACAO 1 (preferida, sem tocar no banco):
+    Usar o Caminho D com cautela e autorizacao explicita:
+      1. Fazer backup do jobs.sqlite3
+      2. Gerar o novo hash argon2id FORA do app (mesmos parametros) com a nova
+         senha, lida interativamente
+      3. UPDATE auth_users SET password_hash=?, updated=? WHERE username=?
+         em transacao, com uma unica linha afetada
+      4. UPDATE auth_sessions SET revoked=1 WHERE user_id=?
+         (invalida sessoes antigas)
+      5. Inserir evento em auth_audit_events (opcional, mas recomendado)
+      6. Reiniciar davy-jones APENAS se necessario (NAO e necessario: o hash
+         e lido a cada login pela consulta SQL)
+    Observacao importante: nao e preciso reiniciar o servico, porque login()
+    consulta o hash no banco a cada tentativa.
+
+  RECOMENDACAO 2 (mais limpa, requer acao administrativa):
+    Se houver acesso ao backend por loopback com o token administrativo de
+    admin.json, existe caminho para operacoes administrativas — mas nao para
+    criacao de sessao humana. Verificar com o administrador se existe um
+    procedimento documentado de bootstrap/recuperacao ja conhecido pelo projeto.
+
+  EM QUALQUER CASO:
+    - Fazer backup antes.
+    - Usar senha forte conforme a politica (14-256, 6 distintos, 3 classes).
+    - Nao alterar role, enabled ou blocked (ja estao corretos).
+    - Nao tocar em tiago.adv.
+
+9.3 IMPACTO NAS SESSOES
+ _RESET_PASSWORD revoga todas as sessoes do usuario (self.revoke). Isso e
+  desejavel: sessoes antigas nao devem sobreviver a uma troca de senha.
+  As 7 sessoes registradas ja estao todas inativas (expiradas ou revogadas).
+
+9.4 NECESSIDADE DE REINICIAR SERVICOS
+  NENHUM. O hash e lido do banco a cada tentativa de login
+  (human_auth.py linha 75). Nao ha cache em memoria. Alterar o hash no banco
+  surte efeito imediato.
+  Unica excecao: se o arquivo human_auth.json (config de origins/segredos) for
+  alterado — nesse caso sim, davy.py carrega no startup (linha 228).
+
+================================================================================
+10. EVIDENCIAS DE QUE NENHUMA ALTERACAO FOI REALIZADA
+================================================================================
+
+BANCO DE DADOS
+  Todas as consultas executadas com:
+    sqlite3.connect('file:...?mode=ro', uri=True)
+  modo somente leitura. Nenhum UPDATE, INSERT, DELETE ou migracao.
+  O arquivo jobs.sqlite3 nao foi modificado:
+    mtime preservado, tamanho identico.
+
+  Verificacao: o unico acesso de escrita observado no banco durante esta
+  diagnostico seria o proprio davy-jones em operacao normal do usuario — nao
+  parte desta auditoria.
+
+CONFIGURACOES
+  human_auth.json ... owner tlandskron:tlandskron, mode 600, mtime 13:17:57
+                     (inalterado desde a Etapa C)
+  admin.json ........ nao tocado
+  Caddyfile ......... nao tocado
+  Config do sysctl .. nao tocado
+
+SERVICOS
+  Nenhum reiniciado. davy-jones PID 1581431 inalterado desde 13:20:44.
+  caddy PID 1579136 inalterado.
+
+CONTAS
+  Nenhuma conta criada, removida, bloqueada, desbloqueada ou modificada.
+  Nenhuma senha alterada.
+  Nenhum hash, salt ou registro de autenticacao tocado.
+
+TESTES
+  Nenhum login executado. Nenhuma tentativa consumida.
+  Nenhuma credencial enviada por HTTP.
+  Nenhum cookie ou token real reutilizado.
+  O rate limit NAO foi alterado nem zerado (nao ha como sem escrever).
+
+DADOS SENSIVEIS
+  Nenhuma senha exibida.
+  Nenhum hash completo exibido (apenas comprimento 97 e prefixo $argon2id$).
+  Nenhum salt exibido.
+  Nenhum token de sessao exibido (apenas metadados).
+  Nenhum proxy_secret ou csrf_secret exibido.
+  Nenhum log foi copiado integralmente.
+
+================================================================================
+11. RESUMO OBJETIVO
+================================================================================
+
+  Usuário correto para login .......: tlandskron
+                                          (case-insensitive; e-mail NAO e aceito)
+  Usuário encontrado ................: tlandskron
+  Perfil ............................: ADMIN
+  Conta ativa .......................: SIM (enabled=1, blocked=0)
+  Armazenamento das credenciais ....: SQLite local
+                                          /home/tlandskron/davy-jones/data/jobs.sqlite3
+                                          tabela auth_users
+                                          (NAO esta no PostgreSQL)
+  Algoritmo de hashing ..............: Argon2id (argon2-cffi 25.1.0)
+                                          t=3, m=65536 (64 MiB), p=4,
+                                          hash_len=32, salt_len=16
+  Verificador identificado ..........: argon2.PasswordHasher.verify(hash, senha)
+                                          invocado em human_auth.py linha 79
+                                          (login) e linha 151 (own_password)
+  Possível causa da falha de login ..: SENHA INCORRETA (5 falhas) + RATE LIMIT
+                                          atingido (exact>=5 em 15 min)
+  Teste seguro de senha disponível .: SIM (secao 8.2)
+                                          Leitura pura, sem escrita, sem
+                                          incremento de contador, sem sessao.
+                                          NAO EXECUTADO nesta etapa.
+  Redefinição necessária ...........: A CONFIRMAR
+                                          Se o teste retornar INCORRETA, redefinir.
+                                          Caminho oficial exige admin autenticado
+                                          (bloqueio circular, pois a unica conta
+                                          ADMIN e tlandskron).
+                                          Caminho alternativo: edicao do hash no
+                                          SQLite com backup, sem reiniciar servico.
+  Próxima ação recomendada ..........: 1) Executar o teste seguro da secao 8.2
+                                          (autorizacao especifica necessaria)
+                                       2) Se CORRETA: verificar caps lock e
+                                          colagem do campo
+                                       3) Se INCORRETA: autorizar redefinicao
+                                          (secao 9.2)
+                                       4) Em qualquer caso, aguardar a expiracao
+                                          da janela de rate limit antes de novas
+                                          tentativas (ou usar outra maquina na
+                                          sub-rede, pois o contador e por /24)
+
+  Classificação final ...............: AUTH_DIAG_COMPLETE
+
+================================================================================
+12. PENDENCIAS PARA DECISAO DO ADMINISTRADOR
+================================================================================
+
+  P1  Autorizar (ou nao) a execucao do teste de senha da secao 8.2.
+  P2  Se a senha estiver correta: ha indicios de que o problema foi outro
+      (caps lock, espaco colado, ou o identificador usado). Verificar.
+  P3  Se a senha estiver incorreta: escolher entre o caminho oficial com
+      ressalva do bloqueio circular (secao 9.2) ou a edicao direta do hash
+      com backup.
+  P4  Considerar esperar a janela de rate limit expirar (15 min deslizantes)
+      antes de novas tentativas. Como o contador e por sub-rede /24, usar outra
+      origem nao resolve se for a mesma sub-rede.
+  P5  O rate limit de 5 falhas exatas e relativamente agressivo para uso
+      administrativo. Avaliar se e desejavel (alteracao de codigo — FORA do
+      escopo desta diagnostico).
+  P6  Documentar o procedimento da secao 8.2 em um guia de recuperacao, para
+      nao depender de uma sessao com agente.
+
+================================================================================
+FIM — MEDUSA-AUTH-DIAG-01
+Classificacao: AUTH_DIAG_COMPLETE
+Nenhuma alteracao executada. Nenhuma senha recuperada ou testada.
+================================================================================

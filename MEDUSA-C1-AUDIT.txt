@@ -1,0 +1,200 @@
+================================================================================
+MEDUSA-C1-AUDIT — AUDITORIA ARQUITETURAL (C1.1)
+================================================================================
+
+Projeto ....: Caribbean Pirates GPT — Davy-Jones + Medusa
+Servidor ....: medusa (Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic)
+Data ........: 2026-10-14, 20:35 - 20:40 (-03:00)
+Executor ....: tlandskron (uid=1000), sudo NOPASSWD
+Modo ........: SOMENTE LEITURA (banco aberto com sqlite3 mode=ro)
+
+CLASSIFICACAO DESTA FASE: auditoria concluida; veredito de implementacao
+na secao 6 (gates C1.3 avaliados apos o projeto tecnico).
+
+Nenhum servico reiniciado. Nenhuma configuracao alterada. Nenhum dado criado,
+modificado ou removido. Nenhuma credencial testada. Nenhum segredo neste relatorio.
+
+================================================================================
+1. BANCO DE DADOS (3.1)
+================================================================================
+
+1.1 SQLITE — ARMAZENAMENTO EFETIVO DA APLICACAO
+  Arquivo: /home/tlandskron/davy-jones/data/jobs.sqlite3 (15.446.016 bytes)
+  Permissoes: tlandskron:tlandskron 600; diretorio data/ 700.
+  Modo de leitura desta auditoria: URI mode=ro (sem efeitos colaterais).
+
+  Tabelas e volumes:
+    auth_audit_events   59 linhas
+    auth_job_owners     3 linhas
+    auth_sessions       17 linhas
+    auth_users          2 linhas  (tlandskron ADMIN, tiago.adv USER)
+    jobs                282 linhas
+
+  Padrao de concorrencia (classe Store, davy.py):
+    - PRAGMA journal_mode=WAL na inicializacao
+    - connect() com timeout=10 s, row_factory=Row, context manager com commit
+    - BEGIN IMMEDIATE em todas as escritas concorrentes (jobs, auth, reviews)
+    - migrate() aditivo: CREATE TABLE IF NOT EXISTS para auth_* (human_auth.py:30)
+    - HumanAuth.__init__ executa migrate() — idempotente e reexecutavel
+    - Sem chaves estrangeiras declaradas; integridade via consultas aplicativas
+      e UNIQUE constraints. Ativar FK globalmente alteraria o comportamento de
+      codigo existente — nao recomendado.
+
+  Conclusao parcial: o SQLite e o armazenamento relacional real e unico da
+  aplicacao, com padrao de evolucao de schema ja estabelecido (DDL aditiva
+  idempotente executada no startup).
+
+1.2 POSTGRESQL — EXISTE, MAS NAO E USADO
+  Container infra-postgres (pgvector 0.8.6-pg18) ativo e saudavel.
+  Bancos: postgres, davy_jones, medusa — os dois ultimos com 0 tabelas.
+  Busca em todo o codigo de app/*.py por postgres|psycopg|5432|DATABASE_URL:
+  NENHUMA ocorrencia. A aplicacao nao abre nenhuma conexao PostgreSQL.
+  Conclusao parcial: adotar o PostgreSQL para o cadastro exigiria introduzir
+  driver, pool, credenciais, backup e operacao novos — sem nenhum precedente
+  no codigo. Rejeitado pelo principio de reutilizacao segura.
+
+1.3 QDRANT — VETORIAL, NAO RELACIONAL
+  12 colecoes ativas (davy_jones_mem0_v1 2560d, medusa_rag_chunks_v1, workspaces,
+  etc.). Uso no codigo restrito a memory_layer.py (Mem0 OSS, SCOPE user_id
+  tlandskron, filtros por source_job_id). O procedimento proibe indexar dados
+  pessoais no Qdrant sem autorizacao especifica (secao 8.2). Pesquisa do
+  cadastro sera SQL (LIKE), nao vetorial.
+  Conclusao parcial: Qdrant fora do escopo de armazenamento do cadastro.
+
+1.4 REDIS — CACHE/SESSOES DE INFRA, SEM USO APLICATIVO MAPEADO
+  Container saudavel. Nao ha referencia no codigo de autenticacao ou jobs a
+  chaves Redis aplicativas (fora do escopo desta auditoria aprofundar).
+  Nao e candidato a armazenamento do cadastro.
+
+1.5 ESCOLHA DOCUMENTADA (antecipa C1.3 item 2)
+  Armazenamento do cadastro universal: SQLite jobs.sqlite3, tabelas novas
+  prefixadas registry_*, migracao aditiva idempotente no padrao migrate()
+  existente. Justificativa: consistencia (WAL + BEGIN IMMEDIATE ja provados),
+  integridade (UNIQUE + validacao aplicativa, sem FK global), backup (arquivo
+  unico, API sqlite3 backup com WAL), concorrencia (mesmo modelo do codigo),
+  manutencao (zero dependencias novas) e evolucao (DDL aditiva versionavel).
+
+================================================================================
+2. OCR E DOCUMENTOS (3.2)
+================================================================================
+
+2.1 MODULO document_ocr.py (15.983 B)
+  Contrato: MEDUSA_DOC_OCR_V1; revisao: MEDUSA_DOC_OCR_REVIEW_V1.
+  Storage: /home/tlandskron/davy-jones/data/document_ocr/<document_id>/
+    manifest.json, original/<image_id>.<ext>, ocr/<image_id>.json
+  document_id: uuid4 hex (32), gerado em Store.add_ocr no upload. ESTAVEL por
+  documento (nao muda entre jobs; jobs referenciam o mesmo document_id).
+  Arquivos: ate 4 imagens, 20 MiB totais; sha256 por imagem; verificacao
+  `original_hash_changed` na releitura.
+  Campos: fid='ocr-field-'+sha256(document_id+key)[:24] (deterministico);
+  evidencias eid='ocr-ev-'+sha256(...)[:24].
+  Revisao humana: validate_review() exige job_id + field_id + acao +
+  expected_revision + reviewed_value + comment; project_review() projeta estado.
+  ALIASES/LABELS: dicionario de rotulos de campo para extracao (nao confundir
+  com nome amigavel de documento — sao conceitos distintos).
+
+2.2 NOME AMIGAVEL SEM TOCAR NA IDENTIDADE TECNICA — VIAVEL (confirmado)
+  O rótulo pode viver em tabela propria (registry_doc_labels) chaveada por
+  document_id, com job_id de origem registrado. Nada no fluxo OCR/DOCX le o
+  nome do arquivo fisico para identidade: a identidade e document_id (+ hashes
+  sha256 dos bytes). Renomear/adicionar rotulo NAO altera hash, conteudo,
+  proveniencia (manifest.json), historico de revisao ou contratos.
+  Arquivos fisicos NAO serao renomeados.
+
+2.3 MODULO document_docx.py (14.791 B)
+  Contrato de entrada validate_selection(): template procuracao v1.0,
+  sources={outorgante,endereco,outorgado} como job IDs 32-hex, association_
+  confirmed booleano, input_revision 64-hex. resolve() busca os jobs OCR e so
+  aceita valores com revisao humana aprovada (EMPTY_APPROVED_VALUE e outros
+  blocking_reason caso contrario). Template e placeholders fixos em manifest.
+  Conclusao: um seletor amigavel pode resolver label->job_id no cliente e
+  submeter o contrato EXISTENTE sem alteracao. Viavel como camada de interface.
+
+2.4 FLUXO DE JOBS OCR/DOCX NO BACKEND (davy.py)
+  add_ocr(): gera document_id + job 32-hex, idempotencia por request_digest,
+  limites 100 ativos / 10000 totais. Rotas: /documents/ocr (upload), 
+  /documents/ocr/<job>/<image> (bytes originais), /documents/docx/preview,
+  /documents/docx/templates, /documents/docx/<id>/download (com verificacao
+  sha256 do artefato). Revisoes via jobs kind legal_review/document review.
+  Nenhum desses contratos sera alterado.
+
+================================================================================
+3. INTERFACE E AUTENTICACAO (3.3)
+================================================================================
+
+3.1 PAGINA E NAVEGACAO (index.html, pos R1/R2/R3)
+  Menu lateral #side-nav com R1_VIEWS (home, memoria, evidencia, pesquisa,
+  resposta, ferramentas, config, diagnostico). Nova entrada "Cadastro" cabe
+  no mesmo padrao (link + data-view + secao). Rotas HTML do backend: /login,
+  /admin/users, /account/password (davy.py:413-423). Nova pagina pode seguir o
+  padrao /admin/* (ADMIN) ou viver como visao client-side; ver arquitetura.
+
+3.2 CADASTRO DE USUARIOS vs ENTIDADES JURIDICAS (distincao critica)
+  auth_users: contas de LOGIN (username, password_hash argon2id, role
+  ADMIN|USER, enabled, blocked). 2 contas. Login exige username+password;
+  e-mail nao e campo.
+  Entidades do cadastro universal (clientes, partes, advogados) NAO sao contas:
+  viverao em tabelas registry_* sem password_hash, sem sessao, sem token.
+  Criar pessoa NAO cria login. Requisito arquitetural explicito.
+
+3.3 RBAC, SESSOES, CSRF, ORIGIN
+  allowed(public): proxy exige X-Medusa-Proxy-Key + origin na allowlist +
+  Host 127.0.0.1:8766; metodos de escrita exigem X-CSRF-Token; loopback exige
+  Bearer admin. human_admin(): proxy + principal ADMIN. Padrao de rota
+  USER-restrita em davy.py:550. RBAC existente tem granularidade ADMIN|USER,
+  sem ACL por registro. Decisao (antecipa 7.3): cadastro inicialmente
+  ADMIN-only no backend (human_admin), com menu oculto para USER; pendencia de
+  leitura USER documentada. Nao ha ampliacao de privilegios: USER continua sem
+  acesso, ADMIN ganha funcoes novas dentro do mesmo papel.
+
+3.4 TESTES EXISTENTES (48 arquivos em tests/)
+  Padrao: unittest + tempfile.TemporaryDirectory + Store(temp) + HumanAuth com
+  cfg de fixture — isolado, sem tocar producao. Template direto para
+  tests/test_registry.py. Live checks: padrao *_live_check.py (browser/API).
+  Nenhum teste atual cobre cadastro (inexistente) — sem conflito.
+
+================================================================================
+4. INFRAESTRUTURA PROTEGIDA (3.4) — BASELINE
+================================================================================
+
+  Servicos user: davy-jones, medusa-caddy, medusa-core, medusa-rag-worker —
+  todos active. Sistema: docker, containerd, tailscaled, ssh — active.
+  Containers (9, todos Up 4 days): obs-node-exporter, obs-grafana,
+  obs-prometheus, medusa-searxng, medusa-docling, infra-qdrant, infra-redis,
+  infra-postgres, u0137-ollama.
+  Backups em /home/tlandskron/backups/: 10 diretorios (M3.2-R1, net-harden,
+  pki-b2, port-5080-c, pre-upgrade x2, ui-design-r1/r2/r3, ui-login-r1).
+  Timers: medusa-davy-health (5 min), medusa-remote-backup, medusa-davy-backup.
+  Modelos Ollama: qwen3:8b, qwen3-embedding:4b, bge-m3, embeddinggemma,
+  snowflake-arctic-embed2, gemma4-64k.
+
+================================================================================
+5. RISCOS E BLOQUEIOS AVALIADOS (antecipa C1.3)
+================================================================================
+
+  Nenhum criterio de bloqueio foi atingido:
+  - Dados existentes: preservados (migracao so ADICIONA tabelas).
+  - Sem migracao destrutiva: nenhum ALTER/DROP em tabelas existentes.
+  - Identificadores tecnicos: document_id, job_id, hashes intocados.
+  - OCR/DOCX: contratos e validadores intocados; UI resolve IDs no cliente.
+  - Dados pessoais: SQLite 600/700, sem PII em logs (regra de sanitizacao).
+  - Permissoes: ADMIN-only inicial; USER nao ganha nada.
+  - Backup: sqlite3 backup API (WAL-safe) + copia de codigo; rollback = revert
+    de codigo (tabelas novas ficam inertes, sem dano).
+  - Idempotencia: CREATE TABLE IF NOT EXISTS + INSERTs com UNIQUE; reexecucao
+    segura.
+  - Testes isolados primeiro: unittest em DB temporario + rotas em servidor
+    de teste local antes de tocar producao.
+  - RAG/Mem0/infra: nenhum write novo nesses sistemas.
+
+================================================================================
+6. VEREDITO DA AUDITORIA
+================================================================================
+
+  Auditoria completa e fundamentada. Implementacao NAO bloqueada pelos dados
+  coletados. Decisao final de prosseguir apos o projeto tecnico (C1.2/C1.3),
+  conforme o principio de execucao condicionada.
+
+================================================================================
+FIM — MEDUSA-C1-AUDIT
+================================================================================

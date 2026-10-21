@@ -1,0 +1,185 @@
+================================================================================
+MEDUSA-UI-DESIGN-R3 — REFINAMENTO VISUAL DOS CARTOES DE STATUS
+================================================================================
+
+Projeto ....: Caribbean Pirates GPT — Medusa + Davy-Jones
+Servidor ....: medusa (Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic)
+Interface ...: https://medusa.escritorio.local:5080 (Status operacional, home)
+Referencia ..: MEDUSA-UI-DESIGN-R2 (grade 3x2)
+Data ........: 2026-10-14, 19:32 - 19:35 (-03:00)
+Executor ....: tlandskron (uid=1000), sudo NOPASSWD
+Escopo ......: apresentacao interna dos 6 cartoes de status
+
+CLASSIFICACAO FINAL: UI_DESIGN_R3_SERVER_VALIDATED
+
+Rollback: NAO EXECUTADO (nenhuma falha, nenhuma regressao)
+Somente index.html foi modificado. Bloco <script> byte-identico ao R2.
+
+================================================================================
+1. DIAGNOSTICO INICIAL
+================================================================================
+
+1.1 ESTRUTURA ATUAL DOS CARTOES
+  Os cartoes NAO existem como HTML estatico: sao criados dinamicamente por
+  dependency(name,data,description) em index.html:
+    card = div.card
+      + strong(nome)
+      + p.badge good|bad (texto Disponivel/Indisponivel/Sem resposta)
+      + small(descricao)
+      + [p.error (problemas)] [small (HTTP xxx)]
+  Renderizados em ordem fixa via statuses() apos Promise.allSettled de
+  /health, /rag/status e /memory/status.
+
+  node(tag,text,cls): createElement + textContent + className. Sem innerHTML,
+  sem injecao de markup — portanto reestruturar via JS exigiria mexer na
+  funcao que gera os nos.
+
+1.2 DECISAO DE IMPLEMENTACAO: CSS PURO
+  A "estrutura recomendada" (cabecalho + corpo) foi alcancada SEM reescrever
+  dependency(): o grid CSS posiciona os filhos existentes —
+  strong na coluna 1 / selo na coluna 2 (linha superior) e descricao e erros
+  em largura total abaixo. Resultado visual identico ao recomendado, com risco
+  zero a logica dinamica. O bloco <script> permanece byte-identico ao R2
+  (comprovado por comparacao direta no log).
+
+1.3 ARQUIVO MINIMO NECESSARIO
+  Conclusao: SOMENTE index.html (bloco <style>). Nenhum outro arquivo precisa
+  ser tocado. A grade 3x2 do R2 e preservada (regras R2 intactas e verificadas).
+
+================================================================================
+2. BACKUP OBRIGATORIO
+================================================================================
+
+DIRETORIO (novo, sem sobrescrever R1/R2)
+  /home/tlandskron/backups/ui-design-r3-20261014-193251 (root:root, 700)
+  index.html.pre-r3  80.587 B  (copia fiel do estado R2)
+  rollback.sh        executavel, modo 700 (restaura + restart + verifica)
+
+HASHES
+  index.html estado R2  0fe039ff2259e228be827d933bc90633050fc0e4a629b362f3521bd6d6b83fb8
+  index.html pos-R3     25af2d7b48394db8b349d6dd28bf92461aab7b3584d9b0f605d26e9d7a70da99
+  copia de backup      0fe039ff22... (identica ao estado R2)
+
+METADADOS PRESERVADOS: owner tlandskron:tlandskron, mode 644.
+
+================================================================================
+3. ALTERACAO IMPLEMENTADA (somente CSS, 9 linhas)
+================================================================================
+
+  /* MEDUSA-UI-DESIGN-R3: layout interno dos cartoes de status ... */
+  #dependencies .card{display:grid;grid-template-columns:minmax(0,1fr) auto;
+    column-gap:10px;row-gap:8px;align-items:center;padding:14px 16px}
+  #dependencies .card>strong{grid-column:1;grid-row:1;min-width:0;
+    overflow-wrap:anywhere;font-size:.95rem}
+  #dependencies .card>p.badge{grid-column:2;grid-row:1;margin:0;
+    white-space:nowrap;justify-self:end}
+  #dependencies .card>small{grid-column:1/-1;margin:0;line-height:1.5}
+  #dependencies .card>p.error{grid-column:1/-1;margin:4px 0 0}
+
+  EFEITO POR ELEMENTO:
+  - Cabecalho: strong a esquerda (coluna flexivel), selo a direita (coluna
+    automatica), alinhamento vertical central, gap horizontal de 10 px.
+    white-space:nowrap no selo impede quebra; min-width:0 + overflow-wrap no
+    titulo impede sobreposicao — o titulo quebra, o selo nunca e invadido.
+  - Corpo: descricao (small) em linha separada, largura total, com espacamento
+    superior de 8 px (row-gap) e line-height 1.5; erros e HTTP tambem em
+    largura total com margem superior propria.
+  - Respiro: padding 14 px vertical / 16 px horizontal (antes 12 px uniformes);
+    cantos arredondados e bordas herdados, inalterados.
+  - Escopo: seletor #dependencies — #tool-catalog e outros .cards inalterados.
+
+  RESPONSIVIDADE: o grid interno usa fracao + auto, portanto adapta-se a
+  qualquer largura de coluna da grade 3x2/2x1/1x1 do R2. Em telas estreitas o
+  titulo quebra em mais linhas e o selo permanece a direita, sem sobreposicao.
+
+  O diff pre-R3 vs pos-R3 contem EXATAMENTE este bloco e nada mais.
+
+================================================================================
+4. RESTRICOES RESPEITADAS
+================================================================================
+
+  Nao alterado (verificado por diff integral e por mtime):
+  backend, endpoints de status, logica de disponibilidade (bloco JS identico),
+  autenticacao/sessoes/RBAC, bancos, Caddy/PKI/firewall/Tailscale/portas,
+  Mem0/Qdrant/Ollama/Docling/RAG, outras paginas, home alem dos cartoes.
+  Nenhum cartao removido. Nenhum texto trocado. Nenhum estado estatico.
+  Nenhum servico alem do davy-jones foi reiniciado (e apenas ele, por servir
+  o HTML no startup). VM e containers intactos.
+
+================================================================================
+5. VALIDACAO E TESTES
+================================================================================
+
+  PRE-ATIVACAO: estrutura, ordem dos 6 cartoes, botao Atualizar, link
+  diagnostico no menu, status-details unico, grade R2 intacta, tool-catalog
+  sem override, sem recursos externos. node --check OK (bloco inalterado).
+
+  POS-ATIVACAO (servido == arquivo, byte-a-byte):
+  1. home abre em 5080 ........................ OK (302 sem sessao, ssl=0)
+  2. seis cartoes (ordem e chamadas intactas) .. OK
+  3. titulo no topo (grid col 1) ............... OK (regra servida)
+  4. selo a direita (grid col 2, nowrap) ....... OK (regra servida)
+  5. descricao abaixo (largura total) .......... OK (regra servida)
+  6. sem selo colado no texto (gap+padding) .... OK (regras servidas)
+  7. grade 3x2 em desktop ..................... OK (regras R2 intactas)
+  8. responsividade ........................... OK (regras R2 + grid interno
+     fluido; confirmacao de pixels no Windows pendente)
+  9. Atualizar status ......................... OK (botao + statuses() intactos)
+  10. estados dinamicos ....................... OK (dependency() intacta;
+      sem valor estatico)
+  11. menu lateral ............................ OK (inalterado)
+  12. diagnostico pelo menu ................... OK (inalterado)
+  13. servicos e rotas ........................ OK (0 falhas, 9 containers,
+      hardening 1024, /auth/me 401, Origin estranha 403, login 200x3)
+
+  Nenhuma credencial real em testes. Nenhuma sessao criada ou modificada.
+  Contas com updated == created (nenhuma senha alterada).
+
+================================================================================
+6. APLICACAO CONTROLADA
+================================================================================
+
+  systemctl --user restart davy-jones.service
+  PID antes ....... 1961871
+  PID depois ...... 1975367
+  Estado .......... active
+  /health ......... 200
+  Downtime ........ ~4 s (somente Caddy -> 8766)
+
+================================================================================
+7. INCIDENTES
+================================================================================
+
+  I1 — Permissao do diretorio de backup durante validacao (RESOLVIDO)
+    Para comparar o bloco <script> com o backup, o diretorio (700/root) foi
+    temporariamente aberto para 755 e imediatamente restaurado para 700 apos
+    a leitura. Nenhum arquivo do backup foi alterado (hashes conferem).
+    Permissao final verificada: 700 root:root.
+
+  Nenhum outro incidente. Sem rollback, sem erro de sintaxe, sem 502, sem
+  falha de servico.
+
+================================================================================
+8. PENDENCIAS (Chrome do Windows, administrador)
+================================================================================
+
+  P1 Confirmar titulo a esquerda e selo a direita em cada um dos 6 cartoes.
+  P2 Confirmar descricao abaixo com espacamento limpo, sem selo colado.
+  P3 Confirmar harmonia de altura e respiro interno.
+  P4 Repetir em janela estreita (titulo deve quebrar sem invadir o selo).
+
+================================================================================
+9. ESTADO FINAL
+================================================================================
+
+  Arquivo modificado: index.html (1) — 80.587 -> 81.300 bytes (+713)
+  Backup: /home/tlandskron/backups/ui-design-r3-20261014-193251
+  Servicos: todos active, 0 falhas, 9 containers, hardening 1024
+  Contas: tlandskron ADMIN e tiago.adv USER, ambas ativas e inalteradas
+
+CLASSIFICACAO FINAL: UI_DESIGN_R3_SERVER_VALIDATED
+
+================================================================================
+FIM — MEDUSA-UI-DESIGN-R3
+Encerrar apos a R3. Nenhuma alteracao nova iniciada.
+================================================================================

@@ -1,0 +1,367 @@
+================================================================================
+MEDUSA-UI-DESIGN-R1 — IMPLEMENTACAO CONTROLADA DO PROTOTIPO 1
+================================================================================
+
+Projeto ....: Caribbean Pirates GPT — Medusa + Davy-Jones
+Servidor ....: medusa (Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic)
+Interface ...: https://medusa.escritorio.local:5080 (página inicial "/")
+Data ........: 2026-10-14, 18:58 - 19:10 (-03:00)
+Executor ....: tlandskron (uid=1000), sudo NOPASSWD
+Escopo ......: exclusivamente camada de interface (index.html)
+
+CLASSIFICACAO FINAL: UI_DESIGN_R1_SERVER_VALIDATED
+
+Rollback: NAO EXECUTADO (nenhuma falha, nenhuma regressao)
+Nenhum dado foi migrado ou removido. Nenhuma funcao foi apagada.
+Nenhum arquivo alem de index.html foi modificado.
+
+================================================================================
+1. ETAPA 1 — INVENTARIO DA INTERFACE ATUAL
+================================================================================
+
+1.1 ARQUIVOS
+  /home/tlandskron/davy-jones/app/index.html   71.994 B, 265 linhas
+      (HTML + CSS + JS em arquivo unico; sem template engine)
+  /home/tlandskron/davy-jones/app/davy.py      54.430 B
+      linha 310: PAGE=(ROOT/'app/index.html').read_text()  (lido no startup)
+      linha 433: if path=='/': self.send(200,PAGE,True)
+  /home/tlandskron/davy-jones/app/auth_views.py (LOGIN/ADMIN/PASSWORD — NAO tocado)
+
+  Conclusao: a pagina "/" e servida de um literal lido uma vez no startup.
+  Alterar index.html exige restart do davy-jones (mecanismo controlado).
+
+1.2 PAGINA INICIAL E SECOES (todas abaixo da dobra incluidas)
+  aside.sidebar ......... menu lateral EXISTENTE (MEDUSA-UI-02), 13 links
+  main#main
+    header .............. eyebrow + h1 Medusa + descricao + #active-mode +
+                          source-key (4 badges, apenas indicadores)
+    section#technical-login .... token de administracao (modo tecnico)
+    section#human-identity ..... usuario, perfil, /account/password,
+                                 /admin/users (ADMIN), Sair   [hidden ate login]
+    section[op-title] .......... Status operacional: #refresh-status,
+                                 #dependencies (.cards), <details> com
+                                 <pre id="status-details">
+    section#legal .............. Area de trabalho (4 abas: Consulta documental,
+                                 Agent, Conversacao prevista, Planejamento)
+    section#document-ocr ....... upload JPEG/PNG, OCR local
+    section#document-docx ...... geracao DOCX controlada (3 OCR job IDs)
+    div.two
+      section#ingestion ........ caixa de entrada, ingestao RAG
+      section#operational-memory  Mem0 (remember/recall)
+    section#job-section ........ historico de jobs (100 recentes)
+    section#models ............. informativo (qwen3:8b)
+    section#tools-section ...... catalogo de ferramentas (somente leitura)
+    section#settings ........... densidade da interface
+    section#administration ..... texto informativo (sem controles)
+
+1.3 FORMULARIOS, ACOES, ENDPOINTS E PERMISSOES
+  Secao .............. Acao/endpoint .................. Permissao
+  consulta .......... GET /rag/documents?scope= ...... ambos
+  consulta .......... POST /rag/* (retrieve/draft) ... ambos
+  agent ............. POST /jobs (agent) ............. ambos
+  ocr ............... POST /documents/ocr ........... ambos
+  docx .............. POST /documents/docx/preview .. ambos
+  ingestao .......... GET /inbox, POST /rag/ingest .. ADMIN (USER 403)
+  memoria ........... POST /jobs memory_add ......... ADMIN (USER 403)
+  memoria ........... leitura (recall) .............. ambos
+  historico ......... GET /jobs, /jobs/<id> ......... ambos (filtrado por dono)
+  ferramentas ....... GET /tools .................... ambos
+  status ............ GET /health, /rag/status, ..... ambos
+                      /memory/status
+  sessao ............ /auth/mode, /auth/logout, ...... sessao valida
+                      /account/password, /admin/users (ADMIN)
+
+  Guardas no backend (davy.py): human_admin() linha 385-386;
+  USER bloqueado em /rag/ingest e memory_add/ingest (linha 550);
+  /inbox so chamado para ADMIN no front (initHuman).
+
+1.4 NAVEGACAO E ATUALIZACAO DINAMICA
+  Navegacao por hash (#legal, #document-ocr, ...).
+  Abas com role=tab, setMode(value), mode padrao 'normal'.
+  Polling: jobTimer 4 s (refresh), statusTimer 30 s (statuses).
+  enable() libera botoes conforme modo; USER tem ingest/remember/inbox
+  desabilitados no front (linha 44), alem do bloqueio no servidor.
+
+1.5 MAPA ANTIGA -> NOVA (destino de cada secao)
+  header ..................... Início (identidade, modo real, indicadores)
+  technical-login ............ Início (visivel ate login humano)
+  human-identity ............. Início (sessao)
+  status (cards+botao) ........ Início (resumo operacional)
+  details/status-details ..... Administração → Diagnóstico (movido, ADMIN)
+  legal ...................... Evidência jurídica (+ Pesquisa web, compartilha)
+  ingestion .................. Evidência jurídica
+  document-ocr ............... Evidência jurídica
+  document-docx .............. Evidência jurídica
+  operational-memory ......... Memória operacional
+  job-section ................ Resposta gerada (histórico e resultados)
+  tools-section .............. Pesquisa web (+ Ferramentas, compartilha)
+  models ..................... Ferramentas
+  settings ................... Configurações
+  administration (legado) .... Diagnóstico (contexto, sem controles novos)
+
+  Nenhuma secao ficou sem destino. Nenhum contexto e perdido: os nos DOM nao
+  foram duplicados nem destruidos, apenas alterna-se a visibilidade; IDs,
+  listeners e timers permanecem intactos.
+
+1.6 SESSOES, CSRF, COOKIES
+  Nenhum codigo de sessao, CSRF, cookie ou Origin foi tocado.
+  O roteador novo nao cria requisicoes, nao le cookies e nao altera headers.
+  Compatibilidade: o JS novo roda no mesmo <script> e reutiliza $ e setMode.
+
+1.7 DIVERGENCIA ESPECIFICACAO x CODIGO (registrada, nao bloqueante)
+  A especificacao pedia "Modo ativo: Planejamento jurídico, conforme o modo
+  real". O codigo real tem mode padrao 'normal' = "Consulta documental"
+  (let mode='normal', linha 40; #active-mode inicial "Modo ativo: Consulta
+  documental"). Fixar "Planejamento jurídico" exigiria mudar o padrao de modo
+  no JS, alterando comportamento existente — fora do principio de alteracao
+  minima. DECISAO: exibir o modo REAL dinamicamente via #active-mode/setMode,
+  como a pagina atual ja faz. Nenhum texto de modo foi fixado.
+
+1.8 ROTA DE DIAGNOSTICO (decisao de escopo)
+  As unicas rotas HTML do backend sao /login, /admin/users e /account/password.
+  Criar /admin/diagnostics exigiria editar davy.py (backend), fora da
+  autorizacao "exclusivamente na camada de interface". DECISAO: implementar o
+  Diagnóstico como visao client-side dentro do proprio index.html (#diagnostico),
+  reutilizando os mesmos endpoints de status. O gate ADMIN e presentacional;
+  o RBAC real do servidor permanece inalterado (/admin/users continua atras de
+  human_admin()). Nenhum dado novo e exposto: o conteudo do diagnostico sao os
+  mesmos JSONs que o resumo da home ja consome.
+
+================================================================================
+2. ETAPA 2 — BACKUP E ROLLBACK
+================================================================================
+
+DIRETORIO
+  /home/tlandskron/backups/ui-design-r1-20261014-185809 (root:root, 700)
+
+CONTEUDO
+  index.html.orig  71.994 B  tlandskron:tlandskron 644
+      copia fiel (cp -a) antes de qualquer alteracao
+  rollback.sh      executavel, modo 700
+      restaura o arquivo, garante owner e reinicia davy-jones
+
+HASHES
+  index.html ANTES   08c973b8aa42a2566710cb7c94daf60424cf179935e5222cda72f02216a70d1a
+  index.html DEPOIS  255f94cbd66295e632413efa1b9bff00766ae106068670975e0451ddfa18417a
+  copia de backup    08c973b8aa42a2566710cb7c94daf60424cf179935e5222cda72f02216a70d1a
+                     (identica ao original)
+
+METADADOS PRESERVADOS
+  owner ..... tlandskron:tlandskron
+  mode ....... 644
+  tamanho .... 71.994 -> 79.455 bytes (+7.461, ~10%)
+
+ROLLBACK (nao executado)
+  bash /home/tlandskron/backups/ui-design-r1-20261014-185809/rollback.sh
+  Gatilhos previstos: erro de sintaxe, pagina sem abrir, regressao de
+  funcionalidade, erro JS, quebra de autenticacao. Nenhum ocorreu.
+
+================================================================================
+3. NOVO LAYOUT E PAGINA INICIAL
+================================================================================
+
+3.1 MENU LATERAL (substitui o nav anterior)
+  Início · Memória operacional · Evidência jurídica · Pesquisa web ·
+  Resposta gerada · Ferramentas · Configurações ·
+  Administração (ADMIN, grupo com Usuários -> /admin/users e
+  Diagnóstico do sistema -> #diagnostico)
+
+  Expandido por padrao em desktop. Botao #nav-toggle recolhe para icones
+  (labels ocultos com tecnica clip, tooltips via title nativo).
+  Preferencia persistida em localStorage ('medusa-nav').
+  Mobile: abaixo de 900 px o menu volta ao padrao empilhado existente e o
+  botao de recolher e ocultado (nao faz sentido recolher em layout vertical).
+  Icones: caracteres unicode discretos com aria-hidden, sem fontes externas.
+  Entradas extras (Ferramentas, Configurações) existem porque Modelos,
+  Ferramentas e Configurações sao funcionalidades comprovadas no inventario
+  sem outro destino. Historico e Documentos foram acomodados dentro de
+  Resposta gerada e Evidência jurídica, respectivamente.
+
+3.2 PAGINA INICIAL (visao "home": apenas os tres conjuntos)
+  4.1 Identidade: header intacto (CARIBBEAN PIRATES GPT, Medusa, descricao,
+      #active-mode dinamico, 4 badges apenas como indicadores, sem links).
+  4.2 Sessao: #technical-login (pre-login) + #human-identity (usuario, perfil,
+      Alterar minha senha, Administração de usuarios so ADMIN, Sair). Rotas e
+      mecanismos inalterados.
+  4.3 Status: #status-home com os 6 agrupamentos (Davy-Jones, Medusa corpus,
+      Workspace, RAG Worker/Docling, Mem0, Qdrant/Ollama), botao Atualizar
+      status e atualizacao dinamica via statuses() inalterada. Os estados vêm
+      das respostas reais; nenhuma string "Disponivel" foi fixada. O bloco
+      <details> foi REMOVIDO da home e transferido ao Diagnostico.
+
+3.3 DIAGNOSTICO (Administração → Diagnóstico do sistema, ADMIN)
+  Nova secao #view-diagnostics com o <details> original MOVIDO (mesmo no
+  <pre id="status-details">, sem duplicar ID), botao Atualizar diagnóstico
+  (chama statuses()), resumo #diag-summary com contagem de falhas e link de
+  volta ao resumo. ADMIN-only presentacional: para USER exibe aviso e oculta
+  o bloco tecnico. O gate real do servidor nao mudou.
+
+3.4 DEMAIS MODULOS
+  Cada visao exibe as secoes originais com todos os formularios, validacoes,
+  uploads, downloads, RAG, historico e endpoints intactos. Nenhuma funcao de
+  IA nova, nenhuma regra de negocio alterada, nenhum dado migrado.
+
+3.5 PADRAO VISUAL
+  Reutiliza as variaveis e o vocabulario do CSS existente (cards brancos,
+  bordas 8-14 px, tipografia system-ui). Sem frameworks, sem fontes ou estilos
+  externos — compativel com Chrome/Windows. Foco visivel herdado do CSS atual
+  (:focus-visible). Navegacao por teclado nativa (links e botoes focaveis,
+  ordem do DOM preservada).
+
+================================================================================
+4. SEGURANCA
+================================================================================
+
+  Nao modificado (verificado por mtime e por diff de funcoes):
+  SQLite e contas, Argon2id, RBAC, tokens, sessoes, cookies, CSRF, Origin
+  allowlist, Caddyfile, PKI, firewall, Tailscale, PostgreSQL, Redis, Qdrant,
+  Mem0, Ollama, containers Docker.
+
+  Arquivos com mtime preservado (nao tocados):
+    davy.py ......... 2026-10-02 10:03:35
+    human_auth.py ... 2026-10-02 10:07:06
+    auth_views.py ... 2026-10-14 16:31:42 (etapa UI-LOGIN-R1, anterior)
+    Caddyfile ....... 2026-10-14 13:18:22 (etapa 5080, anterior)
+    human_auth.json . 2026-10-14 13:17:57 (etapa 5080, anterior)
+
+  O frontend respeita as permissoes reais: #nav-admin e o link de diagnostico
+  ficam hidden para USER (via human-admin-link existente + polling), e o
+  servidor continua sendo a autoridade (human_admin(), bloqueio de ingestao
+  para USER, allowlist de origins).
+
+================================================================================
+5. VALIDACAO PRE-ATIVACAO
+================================================================================
+
+  IDs unicos criticos (10/10) ............ OK
+  Secoes originais preservadas (13/13) ... OK
+  Endpoints preservados (11/11) .......... OK
+  Funcoes JS preservadas ................. OK (statuses, initHuman, setMode,
+                                           api, enable, human-admin-link)
+  Sem recursos externos .................. OK
+  Balance {} () [] ....................... 0/0/0
+  node --check do script ................. SINTAXE OK
+  Contagem de triple-quote ............... n/a (HTML, sem literais Python)
+
+  Correcao aplicada antes de ativar: removido um <section id="administration">
+  duplicado inserido pelo gerador (detectado na validacao, nunca foi ao ar).
+
+================================================================================
+6. ATIVACAO
+================================================================================
+
+  davy.py le PAGE no startup; restart necessario e autorizado ("mecanismo
+  controlado do servico afetado").
+
+  systemctl --user restart davy-jones.service
+  PID antes ....... 1766428
+  PID depois ...... 1936044
+  Estado .......... active
+  /health ......... 200
+  Downtime ........ ~4 s (somente Caddy -> 8766; proxy e demais servicos intactos)
+
+================================================================================
+7. TESTES POS-ATIVACAO
+================================================================================
+
+  1. Pagina inicial abre em HTTPS 5080 ............ OK (302 sem sessao = proxy
+     e backend vivos; pagina 200 para sessao valida — validacao visual cabe
+     ao admin no Windows)
+  2. Menu lateral funciona ....................... OK (HTML servido contem
+     side-nav com 9 entradas; roteador validado em node, 14/14 rotas)
+  3. Menu recolhido funciona ..................... OK (logica validada: toggle,
+     localStorage, aria-expanded; confirmacao visual no Windows pendente)
+  4. Navegacao por teclado ....................... OK (links/botoes nativos,
+     ordem do DOM preservada, focus-visible herdado)
+  5. Mobile sem sobreposicao ..................... PARCIAL (CSS segue o padrao
+     responsivo existente; confirmacao de renderizacao no Windows pendente)
+  6. Home com somente os 3 conjuntos ............. OK (roteador: home mostra
+     page-header, technical-login, human-identity, status-home)
+  7. Seis agrupamentos operacionais .............. OK (dependencies() e cards
+     intocados; statuses() inalterado)
+  8. Atualizar status ............................ OK (botao + statuses() intactos)
+  9. Diagnostico somente ADMIN ................... OK (stub: ADMIN ve detalhes,
+     USER ve aviso; gate servidor inalterado)
+  10. Memoria/evidencias/pesquisa/respostas ...... OK (secoes e endpoints intactos)
+  11. Logout .................................... OK (humanLogout e rota intactos)
+  12. Alterar senha ............................. OK (/account/password intacto)
+  13. Gerenciar usuarios ........................ OK (/admin/users intacto)
+  14. USER sem funcoes admin .................... OK (nav-admin hidden; servidor
+      continua autoridade)
+  15. 3443 e 3000 funcionais .................... OK (/login 200 nas tres portas)
+  16. Nenhum servico nao relacionado interrompido  OK (0 falhas, 9 containers,
+      hardening 1024, banco e contas intactos)
+
+  HTML SERVIDO == ARQUIVO (byte-a-byte, via loopback 8766): True
+  Roteador em stub node: 14/14 hashes, visibilidade por visao correta,
+  gate ADMIN correto.
+
+  Nenhum POST com credenciais foi executado. Nenhuma sessao foi criada ou
+  modificada. Contas com updated == created (nenhuma senha alterada).
+
+================================================================================
+8. INCIDENTES
+================================================================================
+
+  I1 — Duplicacao de id="administration" (RESOLVIDO, pre-ativacao)
+    O gerador inseriu uma secao vazia com o mesmo id da secao legada.
+    Detectado pela validacao (contagem de ocorrencias: 2).
+    Resolucao: remocao do bloco duplicado + revalidacao completa.
+    Nunca chegou a producao.
+
+  I2 — Nenhum outro incidente. Sem rollback, sem erro de sintaxe no ar,
+    sem 502 prolongado, sem falha de servico.
+
+================================================================================
+9. RISCOS RESIDUAIS
+================================================================================
+
+  RR-1 BAIXO — Confirmacao de renderizacao real (pixels, sobreposicao mobile,
+    recolhimento visual, foco visivel) depende do Chrome no Windows.
+  RR-2 INFO — Secoes compartilhadas entre visoes (#legal em Evidência e
+    Pesquisa; #tools-section em Pesquisa e Ferramentas). E intencional (mesmo
+    modulo, dois pontos de entrada); o estado e unico, sem duplicacao de dados.
+  RR-3 INFO — O gate do Diagnostico e presentacional; a autoridade continua
+    sendo o servidor. Os dados do diagnostico ja alimentam o resumo da home.
+  RR-4 INFO — Polling e timers inalterados; mudanca de visao nao pausa timers.
+
+================================================================================
+10. PENDENCIAS (Windows, administrador)
+================================================================================
+
+  P1 Abrir https://medusa.escritorio.local:5080/ autenticado e conferir a home
+     com os tres blocos e o menu com 9 entradas.
+  P2 Recolher o menu e conferir icones + tooltips; recarregar e conferir
+     persistencia.
+  P3 Navegar por Tab em todo o menu e a home.
+  P4 Abrir cada modulo e conferir formularios e botoes.
+  P5 Como ADMIN, abrir Diagnóstico e conferir detalhes; como USER, conferir
+     ausencia do grupo Administração.
+  P6 Reduzir a janela a largura de celular e conferir ausencia de sobreposicao.
+  P7 Confirmar 3000 e 3443 inalterados.
+
+================================================================================
+11. URLS E ESTADO FINAL
+================================================================================
+
+  Pagina inicial ......... https://medusa.escritorio.local:5080/
+  Login .................. https://medusa.escritorio.local:5080/login
+  Memoria ................ https://medusa.escritorio.local:5080/#memoria
+  Evidencia .............. https://medusa.escritorio.local:5080/#evidencia
+  Pesquisa ............... https://medusa.escritorio.local:5080/#pesquisa
+  Resposta ............... https://medusa.escritorio.local:5080/#resposta
+  Ferramentas ............ https://medusa.escritorio.local:5080/#ferramentas
+  Configuracoes .......... https://medusa.escritorio.local:5080/#config
+  Diagnostico (ADMIN) .... https://medusa.escritorio.local:5080/#diagnostico
+  Usuarios (ADMIN) ....... https://medusa.escritorio.local:5080/admin/users
+  Alterar senha .......... https://medusa.escritorio.local:5080/account/password
+
+  Servicos: davy-jones/caddy/core/rag-worker active; docker, containerd,
+  tailscaled, ssh active; 0 falhas; 9 containers; hardening 1024.
+  Arquivo modificado: index.html (1). Backend, configs, banco: intactos.
+
+CLASSIFICACAO FINAL: UI_DESIGN_R1_SERVER_VALIDATED
+
+================================================================================
+FIM — MEDUSA-UI-DESIGN-R1
+================================================================================

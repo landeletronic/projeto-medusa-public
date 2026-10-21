@@ -1,0 +1,872 @@
+================================================================================
+MEDUSA-NET-PORT-AUDIT-01
+AUDITORIA COMPLETA DE PORTAS E EXPOSICAO DE REDE
+================================================================================
+
+Projeto .........: Caribbean Pirates GPT / Medusa
+Servidor ........: medusa
+Sistema .........: Ubuntu Server 26.04.1 LTS
+Kernel ..........: 7.0.0-38-generic
+IP LAN ..........: 192.168.15.250 (ens18)
+IP Tailscale ....: 100.126.89.55 (tailscale0)
+Hostname ........: medusa.escritorio.local
+Data / hora .....: 2026-10-14, 10:47 - 10:58 (-03:00)
+Modo ............: EXCLUSIVAMENTE LEITURA
+Classificacao ...: AUDIT_COMPLETE
+
+Nenhum servico foi iniciado, parado ou reiniciado. Nenhuma configuracao foi
+alterada. Nenhum pacote foi instalado ou removido. Nenhuma chave privada, senha
+ou token foi reproduzido neste relatorio.
+
+--------------------------------------------------------------------------------
+0. FERRAMENTAS UTILIZADAS E LIMITACOES
+--------------------------------------------------------------------------------
+
+UTILIZADAS
+  ss -H -lntup / -lntupe / -lnuap / -lnt / -lnt6 / -lntu / -H -lntu "sport = :N"
+  netstat -lnt
+  /proc/net/tcp, /proc/net/tcp6, /proc/net/udp, /proc/net/udp6 (leitura direta)
+  systemctl list-sockets --all
+  systemctl list-units --type=service --all
+  systemctl --user list-unit-files / list-timers
+  docker ps -a, inspect, network ls, network inspect, compose ls --all
+  ip -br addr, ip route, ip -6 route, ip -br link
+  iptables -S, iptables -t nat -S, ip6tables -S, nft list chains
+  ps, readlink /proc/PID/exe, /proc/PID/cmdline, /proc/PID/cgroup
+  curl (somente alvos locais), openssl s_client, caddy validate
+
+LIMITACOES REGISTRADAS
+  - lsof NAO ESTA INSTALADO no host. A correlacao socket->processo foi feita por
+    ss -p + /proc/net/* + /proc/PID/inode + cgroup. Confianca: ALTA.
+  - Nao foram executadas varreduras externas (conforme proibido). A
+    acessibilidade a partir de outra maquina e classificada como
+    NOT_VERIFIED_EXTERNALLY.
+  - As regras de firewall do roteador/proxmox NAO foram inspecionadas
+    (fora do host). A exposicao real depende de ACL externa desconhecida.
+  - Argumentos de processos foram lidos e MASCARADOS quando continham
+    segredos (--password, token=, secret=, key=).
+  - Cron de root/sistema NAO foi inspecionado (escopo do usuario). O usuario
+    tlandskron nao possui crontab instalado.
+
+================================================================================
+1. RESUMO EXECUTIVO
+================================================================================
+
+A superficie de rede do host e PEQUENA e BEM CONTIDA. De 26 sockets em escuta,
+13 estao restritos ao loopback ou a interfaces Tailscale especificas. Apenas
+3 portas TCP sao realmente expostas a LAN: 22 (SSH), 3000 e 3443 (reverse proxy
+Caddy). Nenhum container publica porta em 0.0.0.0.
+
+Três achados merecem acao:
+
+  1. ALTO — A porta 8766 (Davy-Jones backend) escuta DIRETAMENTE na interface
+     Tailscale (100.126.89.55:8766), sem passar pelo Caddy e portanto SEM a
+     restricao `remote_ip 192.168.15.0/24` que protege a UI. Esta e a unica
+     porta de aplicacao que contorna o proxy.
+
+  2. MEDIO — net.ipv4.ip_unprivileged_port_start = 0. Qualquer processo nao-root
+     pode abrir portas reservadas (<1024). Este valor foi alterado durante
+     testes anteriores de viabilidade de porta (MEDUSA-PORT-5080-DIAG-01 e
+     preparo do Caddy em :6000) e permaneceu no host. Ver secao 9, R2.
+
+  3. MEDIO — Nenhuma defesa em profundidade no firewall. INPUT esta em ACCEPT.
+     Toda a seguranca de exposicao da UI depende do matcher do Caddy. Uma
+     regressao no Caddyfile expoe a Medusa UI sem que o firewall a barre.
+
+Good practices confirmados: Postgres (5432) e Redis (6379) NAO publicam porta
+para o host; Node Exporter tambem nao; todos os containers usam restart policy;
+Caddy nao tem porta privilegiada; nao existe servico com network_mode: host.
+
+================================================================================
+2. TABELA 1 — LISTENERS (todos os sockets em escuta)
+================================================================================
+
+Legenda de Exposicao:
+  LOOPBACK_ONLY        = so 127.0.0.1 / 127.0.0.x
+  LAN_SPECIFIC         = so 192.168.15.250
+  TAILSCALE_SPECIFIC   = so 100.126.89.55 ou fd7a:...
+  ALL_IPV4             = 0.0.0.0 (inclui LAN)
+  ALL_IPV6             = [::] com v6only=1
+  DOCKER_INTERNAL      = bridge docker (nao e socket de host)
+  LINK_LOCAL           = fe80:: (IPv6 link-local)
+
+---- TCP LISTEN (18 sockets) ----
+
+Proto | Bind              | Porta | PID   | Processo       | Servico/Container      | Projeto        | Finalidade                    | Exposicao          | Situacao
+------+-------------------+-------+-------+----------------+------------------------+----------------+-------------------------------+-------------------+----------
+TCPv4 | 0.0.0.0           | 22    | 7236  | sshd           | ssh.socket/ssh.service | sistema        | SSH remoto                    | ALL_IPV4           | ATIVA (socket-activated)
+TCPv6 | [::] (v6only)     | 22    | 7236  | sshd           | ssh.socket/ssh.service | sistema        | SSH remoto (IPv6)             | ALL_IPV6           | ATIVA
+TCPv4 | 127.0.0.54        | 53    | 800   | systemd-resolve| systemd-resolved       | sistema        | DNS stub (fallback)           | LOOPBACK_ONLY     | ATIVA
+TCPv6 | [::1]             | 53    | 800   | systemd-resolve| systemd-resolved       | sistema        | DNS stub (IPv6)               | LOOPBACK_ONLY     | ATIVA
+TCPv4 | 192.168.15.250    | 3000  | 5138  | caddy v2.11.6   | medusa-caddy.service   | medusa-caddy   | Medusa UI reversa (HTTP)      | LAN_SPECIFIC      | ATIVA
+TCPv4 | 127.0.0.1         | 3000  | 37511 | docker-proxy    | obs-grafana            | observability  | Grafana UI                    | LOOPBACK_ONLY     | ATIVA
+TCPv4 | 192.168.15.250    | 3443  | 5138  | caddy v2.11.6   | medusa-caddy.service   | medusa-caddy   | Medusa UI reversa (HTTPS)     | LAN_SPECIFIC      | ATIVA
+TCPv4 | 127.0.0.1         | 5001  | 6391  | docker-proxy    | medusa-docling         | medusa/compose | OCR/DOCX (docling-serve GPU)  | LOOPBACK_ONLY     | ATIVA (healthy)
+TCPv4 | 127.0.0.1         | 6333  | 6067  | docker-proxy    | infra-qdrant           | (sem compose)  | Banco vetorial Qdrant         | LOOPBACK_ONLY     | ATIVA
+TCPv4 | 127.0.0.1         | 8081  | 6091  | docker-proxy    | medusa-searxng         | medusa-searxng | Busca web SearXNG             | LOOPBACK_ONLY     | ATIVA (healthy)
+TCPv4 | 127.0.0.1         | 8765  | 5134  | python3.14      | medusa-core.service    | medusa-core    | Recuperacao de evidencias     | LOOPBACK_ONLY     | ATIVA
+TCPv4 | 127.0.0.1         | 8766  | 5136  | python3.11      | davy-jones.service     | davy-jones     | Davy-Jones backend (UI)       | LOOPBACK_ONLY     | ATIVA
+TCPv4 | 100.126.89.55     | 8766  | 5136  | python3.11      | davy-jones.service     | davy-jones     | Davy-Jones via Tailscale      | TAILSCALE_SPECIFIC| ATIVA
+TCPv4 | 127.0.0.1         | 8767  | 5135  | python3.14      | medusa-rag-worker.svc  | medusa-rag     | Ingestao RAG (worker)         | LOOPBACK_ONLY     | ATIVA
+TCPv4 | 127.0.0.1         | 9090  | 46091 | docker-proxy    | obs-prometheus         | observability  | Prometheus                    | LOOPBACK_ONLY     | ATIVA
+TCPv4 | 127.0.0.1         | 11434 | 6300  | docker-proxy    | u0137-ollama           | u0137-ollama   | LLM local (Ollama)            | LOOPBACK_ONLY     | ATIVA
+TCPv4 | 100.126.89.55%tailscale0 | 57178 | 4837 | tailscaled | tailscaled.service  | tailscale      | Coordination (WireGuard)      | TAILSCALE_SPECIFIC| ATIVA
+TCPv6 | [fd7a:115c:a1e0::e835:5939] | 36988 | 4837 | tailscaled | tailscaled.service | tailscale      | Coordination (IPv6)      | TAILSCALE_SPECIFIC| ATIVA
+
+NOTA: nao existe socket UDP/TCP de container bridge em /proc/net (bridges sao
+camada 2). As portas internas dos containers estao na Tabela 2.
+
+---- UDP VINCULADO (8 sockets) ----
+
+UDP nao possui estado LISTEN. Todos os sockets abaixo estao em UNCONN.
+
+Proto | Bind              | Porta | PID   | Processo       | Servico              | Projeto  | Finalidade              | Exposicao          | Situacao
+------+-------------------+-------+-------+----------------+----------------------+---------+--------------------------+-------------------+----------
+UDPv4 | 0.0.0.0           | 41641 | 4837  | tailscaled     | tailscaled.service   | tailscale| WireGuard (NAT traversal)| ALL_IPV4           | ATIVA
+UDPv6 | [::] (v6only)     | 41641 | 4837  | tailscaled     | tailscaled.service   | tailscale| WireGuard (IPv6)         | ALL_IPV6           | ATIVA
+UDPv4 | 127.0.0.54        | 53    | 800   | systemd-resolve| systemd-resolved     | sistema  | DNS stub                  | LOOPBACK_ONLY     | ATIVA
+UDPv6 | [::1]             | 53    | 800   | systemd-resolve| systemd-resolved     | sistema  | DNS stub                  | LOOPBACK_ONLY     | ATIVA
+UDPv4 | 127.0.0.1         | 323   | 4885  | chronyd        | chrony.service       | sistema  | NTP cliente/servidor       | LOOPBACK_ONLY     | ATIVA
+UDPv6 | [::1]             | 323   | 4885  | chronyd        | chrony.service       | sistema  | NTP (IPv6)                | LOOPBACK_ONLY     | ATIVA
+UDPv4 | 192.168.15.250    | 3443  | 5138  | caddy v2.11.6   | medusa-caddy.service | medusa   | Medusa UI via HTTP/3 (QUIC)| LAN_SPECIFIC      | ATIVA
+UDPv6 | [fe80::be24:11ff:fefb:27c4]%ens18 | 546 | 1669 | systemd-networkd | systemd-networkd.service | sistema | IPv6 Neighbor Discovery | LINK_LOCAL     | ATIVA
+
+SOCKETS UDP EFEMEROS DESCARTADOS
+  Duas coletas sem sudootraram 0.0.0.0:55390 e 0.0.0.0:35427 sem PID. Nao
+  apareceram na coleta com sudo (que mostra o processo) e sumiram na coleta
+  seguinte. Sao sockets UDP de SAIDA efemeros (bind 0.0.0.0 tipico de cliente),
+  nao listeners. CLASSIFICADOS COMO NAO-LISTENERS.
+
+================================================================================
+3. TABELA 2 — APLICACOES: PORTA INTERNA vs PORTA NO HOST
+================================================================================
+
+Distincao obrigatoria:
+  INTERNA      = porta escutada DENTRO do container (rede bridge)
+  PUBLICADA    = porta com binding no host (127.0.0.1:N -> container:N)
+  NAO PUBLICADA= sem binding; alcancavel apenas por containers da mesma rede
+
+App              | Interna      | No host             | Interface        | Proto | Origem da configuracao
+-----------------+--------------+---------------------+------------------+-------+------------------------
+obs-grafana      | 3000/tcp     | 127.0.0.1:3000      | loopback        | TCP   | observability/docker-compose.yml
+obs-prometheus   | 9090/tcp     | 127.0.0.1:9090      | loopback        | TCP   | observability/docker-compose.yml
+obs-node-exporter| 9100/tcp     | (nenhuma)           | apenas bridge   | TCP   | observability/docker-compose.yml
+medusa-searxng   | 8080/tcp     | 127.0.0.1:8081      | loopback        | TCP   | medusa/searxng/compose.yml
+medusa-searxng   | 8081/tcp     | 127.0.0.1:8081      | loopback        | TCP   | medusa/searxng/compose.yml
+medusa-docling   | 5001/tcp     | 127.0.0.1:5001      | loopback        | TCP   | medusa/compose/docker-compose.yml
+medusa-docling   | 8080/tcp     | (nenhuma)           | apenas bridge   | TCP   | medusa/compose/docker-compose.yml
+infra-qdrant     | 6333/tcp     | 127.0.0.1:6333      | loopback        | TCP   | (sem compose; criado manualmente)
+infra-qdrant     | 6334/tcp     | (nenhuma)           | apenas bridge   | TCP   | (idem)
+infra-redis      | 6379/tcp     | (nenhuma)           | apenas bridge   | TCP   | infra-redis/docker-compose.yml
+infra-postgres   | 5432/tcp     | (nenhuma)           | apenas bridge   | TCP   | infra-postgres/compose.yaml
+u0137-ollama     | 11434/tcp    | 127.0.0.1:11434     | loopback        | TCP   | u0.13.7-ollama/compose.yaml
+caddy (host)     | 8766 (upstr) | 192.168.15.250:3000  | IP LAN         | TCP   | medusa-caddy/Caddyfile
+caddy (host)     | 8766 (upstr) | 192.168.15.250:3443  | IP LAN         | TCP+UDP | medusa-caddy/Caddyfile
+davy-jones(host) | 8766         | 127.0.0.1:8766      | loopback        | TCP   | davy-jones.service (--port 8766 padrao)
+davy-jones(host) | 8766         | 100.126.89.55:8766   | tailscale0      | TCP   | davy-jones.service (--tailscale-ip)
+medusa-core(host)| 8765         | 127.0.0.1:8765      | loopback        | TCP   | medusa-core.service
+rag-worker(host) | 8767         | 127.0.0.1:8767      | loopback        | TCP   | medusa-rag-worker.service
+sshd (host)      | 22           | 0.0.0.0 e [::]      | todas          | TCP   | ssh.socket (socket activation)
+
+TOTAL DE CONTAINERS: 9 (todos em execucao, nenhum parado)
+  COM porta publicada no host ....: 6
+    obs-grafana (3000), obs-prometheus (9090), medusa-searxng (8081),
+    medusa-docling (5001), infra-qdrant (6333), u0137-ollama (11434)
+  SEM porta publicada .............: 3
+    obs-node-exporter, infra-redis, infra-postgres
+  network_mode: host ..............: 0  (nenhum)
+  Publicados em 0.0.0.0 ...........: 0  (todos usam 127.0.0.1)
+
+================================================================================
+4. REDES E INTERFACES
+================================================================================
+
+INTERFACES
+  lo               UNKNOWN  127.0.0.1/8 ::1/128
+  ens18            UP       192.168.15.250/24
+                          2804:7f4:c013:bada:be24:11ff:fefb:27c4/64  (IPv6 GLOBAL)
+                          fe80::be24:11ff:fefb:27c4/64
+  tailscale0       UNKNOWN  100.126.89.55/32  fd7a:115c:a1e0::e835:5939/128
+  br-482ac8206ec3  UP       172.19.0.1/16      (infra-net)
+  br-a5bbc3597545  UP       172.18.0.1/16      (u0137-ollama-net)
+  br-c6a1cba973d6  UP       172.21.0.1/16      (medusa-searxng-net)
+  br-a06e058c7df4  UP       172.20.0.1/16      (observability-net)
+  docker0          DOWN     172.17.0.1/16      (default, sem container)
+  12 interfaces veth (pares container)
+
+ACHADO RELEVANTE — IPv6 GLOBAL ATIVO
+  A interface ens18 possui endereco IPv6 GLOBAL (2804:7f4:c013:bada:...), nao
+  apenas link-local. Existe rota IPv6 default via fe80::dac6:78ff:fea0:9798
+  dev ens18. O host e, portanto, ALCANCAVEL por IPv6 na Internet, se o firewall
+  do roteador permitir. O unico listener IPv6 com v6only=0 implicito em
+  interface fisica e o SSH em [::]:22. Os listeners do Caddy estao presos a
+  192.168.15.250 (IPv4), portanto NAO escutam em IPv6 — a Medusa UI nao e
+  acessivel por IPv6. Ja sshd em [::]:22 E.
+  Classificacao de exposicao IPv6 do SSH: NOT_VERIFIED_EXTERNALLY (depende de
+  ACL do roteador).
+
+REDES DOCKER (todas bridge, subnet distintas, sem sobreposicao)
+  infra-net            172.19.0.0/16   gw 172.19.0.1
+      infra-qdrant=172.19.0.2, infra-redis=172.19.0.3,
+      infra-postgres=172.19.0.4, u0137-ollama=172.19.0.5,
+      medusa-docling=172.19.0.6
+  observability-net    172.20.0.0/16   gw 172.20.0.1
+      obs-node-exporter=172.20.0.2, obs-prometheus=172.20.0.3,
+      obs-grafana=172.20.0.5
+  medusa-searxng-net   172.21.0.0/16   gw 172.21.0.1
+      medusa-searxng=172.21.0.2
+  u0137-ollama-net     172.18.0.0/16   gw 172.18.0.1
+      u0137-ollama=172.18.0.2
+
+  ACHADO: u0137-ollama esta em DUAS redes (infra-net e u0137-ollama-net),
+  ficando com DOIS IPs (172.19.0.5 e 172.18.0.2). Container dual-homed. A rede
+  u0137-ollama-net nao esta em uso por nenhum outro container. Ver R8.
+
+  ISOLAMENTO EFETIVO: Postgres e Redis ficam alcancaveis apenas por containers
+  em infra-net. Nao ha rota da LAN para 172.19.0.0/16 sem passar por Docker.
+
+ROTAS
+  default via 192.168.15.1 dev ens18 (gateway LAN)
+  192.168.15.0/24 dev ens18
+  4 subnets /16 de bridges Docker (linkdown apenas em docker0)
+  IPv6: default via fe80::dac6:78ff:fea0:9798 dev ens18 (RA)
+
+================================================================================
+5. FIREWALL E EXPOSICAO EFETIVA
+================================================================================
+
+POLITICAS
+  iptables filter INPUT ..... ACCEPT
+  iptables filter FORWARD .... DROP
+  iptables filter OUTPUT ..... ACCEPT
+  ip6tables INPUT .......... ACCEPT
+  ip6tables FORWARD ........ ACCEPT
+  net.ipv4.ip_forward ....... 1
+  net.ipv4.conf.all.rp_filter 2 (loose)
+
+CADEIA INPUT (unica regra: ts-input, do Tailscale)
+  -s 100.126.89.55/32 -i lo  -j ACCEPT
+  -i tailscale0 -j ACCEPT
+  -p udp --dport 41641 -j ACCEPT
+  -s 100.115.92.0/23 ! -i tailscale0 -j RETURN
+  -s 100.64.0.0/10 ! -i tailscale0 -j DROP
+
+  INTERPRETACAO: nao existe nenhuma regra INPUT que NEGUE trafego vindo de
+  ens18 (LAN). Com policy ACCEPT, TODO trafego da LAN que alcance o IP do host
+  e ACEITO pelo kernel. A filtragem de origem da Medusa UI NAO vem do firewall.
+
+CADEIA ts-input — EXPOSICAO VIA TAILSCALE
+  `-i tailscale0 -j ACCEPT` sem restricao de porta: qualquer peer Tailscale
+  alcança QUALQUER porta em escuta no host. Isso inclui 22, 8766, 57178 e 36988.
+
+CADEIA ts-forward
+  -i tailscale0 -j MARK --set-xmark 0x40000
+  -m mark --mark 0x40000 -j ACCEPT
+  -s 100.64.0.0/10 -o tailscale0 -j DROP   (anti-spoofing)
+  -o tailscale0 -j ACCEPT
+
+DOCKER (filter)
+  DOCKER-USER: VAZIA (sem regras). Todas as portas publicadas usam 127.0.0.1,
+  o que NAO gera regra DOCKER de exposicao — apenas DNAT em nat.
+  DOCKER (filter) contem ACCEPT por porta/bridge + DROP de origem errada.
+  DOCKER-FORWARD: -i <bridge> -j ACCEPT (retorno dos containers).
+
+DOCKER (nat) — TODAS as 6 regras DNAT sao restritas a 127.0.0.1
+  -d 127.0.0.1/32 --dport 6333  -> 172.19.0.2:6333
+  -d 127.0.0.1/32 --dport 8081  -> 172.21.0.2:8081
+  -d 127.0.0.1/32 --dport 11434 -> 172.19.0.5:11434
+  -d 127.0.0.1/32 --dport 5001  -> 172.19.0.6:5001
+  -d 127.0.0.1/32 --dport 3000  -> 172.20.0.5:3000
+  -d 127.0.0.1/32 --dport 9090  -> 172.20.0.3:9090
+  => Nenhum port forwarding para a LAN. Nenhuma porta de container e
+     potencialmente acessivel de fora do host.
+
+PORT ENCADEAMENTO (DNAT/REDIRECT): NENHUM. Nao existe regra de encaminhamento
+de portas para outra maquina.
+
+TESTES DE ALCANCABILIDADE LOCAL (executados, somente loopback/IP local)
+
+  Loopback:
+    127.0.0.1:3000  -> 302   (Grafana)
+    127.0.0.1:5001  -> 404   (docling, sem rota na raiz)
+    127.0.0.1:6333  -> 200   (Qdrant)
+    127.0.0.1:8081  -> 200   (SearXNG)
+    127.0.0.1:8765  -> 200   (medusa-core)
+    127.0.0.1:8766  -> 200   (Davy-Jones)
+    127.0.0.1:8767  -> 401   (rag-worker, exige token — comportamento correto)
+    127.0.0.1:9090  -> 302   (Prometheus)
+    127.0.0.1:11434 -> 200   (Ollama)
+
+  Via IP LAN 192.168.15.250:
+    :3000 -> 302  COM Host: medusa.escritorio.local:3000
+    :3000 -> 200  SEM Host correto (ver secao 6)
+    :3443 -> 302  COM SNI correto (via --resolve)
+    :3443 -> 000  SEM SNI / IP literal (falha TLS esperada)
+    :5001 :6333 :8081 :9090 :11434 :8765 :8767 -> 000 (TODAS recusadas)
+
+  Via Tailscale 100.126.89.55:
+    :8766 -> 200  (Davy-Jones /health ALCANCAVEL — confirmado)
+    :22   -> ACEITA (confirmado via /dev/tcp)
+
+DISTINCAO EXIGIDA — CLASSIFICACAO DE EXPOSICAO
+
+  Porta | Escuta | Publicada | Firewall | Potenc. LAN | Potenc. TS | Teste local
+  ------+--------+-----------+----------+-------------+------------+-------------
+   22   |  sim   | n/a       | ACCEPT   | SIM         | SIM        | n/a
+   3000 |  sim   | n/a       | ACCEPT   | SIM         | SIM*       | 302 OK
+   3443 |  sim   | n/a       | ACCEPT   | SIM         | SIM*       | 302 OK
+   8766 |  sim   | n/a       | ACCEPT   | NAO (loopback) | **SIM** | 200 OK
+  57178 |  sim   | n/a       | ACCEPT   | NAO         | SIM        | n/a
+  36988 |  sim   | n/a       | ACCEPT   | NAO         | SIM        | n/a
+41641u |  sim   | n/a       | ACCEPT   | SIM (UDP)   | SIM        | n/a
+   546u |  sim   | n/a       | ACCEPT   | link-local   | NAO        | n/a
+   demais loopback: 0.0.0.0 nao se aplica; testados via IP LAN e RECUSADOS (000)
+
+  * 3000/3443 estao presos a 192.168.15.250 (IPv4). Acessiveis por Tailscale
+    somente se houver rota para 192.168.15.0/24 via Tailscale, o que nao ocorre
+    por padrao. Classificado como NOT_VERIFIED_EXTERNALLY.
+
+  NOTA SOBRE ORIGEM EXTERNA A 192.168.15.0/24: o Caddy tem
+  `@outside not remote_ip 192.168.15.0/24` + `abort @outside`. Este filtro
+  EXISTE na configuracao porem NAO PODE SER VERIFICADO sem origem externa,
+  sem alterar configuracao e sem varredura. Classificado como
+  NOT_VERIFIED_EXTERNALLY.
+
+================================================================================
+6. CADDY E REVERSE PROXIES
+================================================================================
+
+OUTROS PROXIES: NENHUM INSTALADO
+  nginx ....... bin ausente, systemd inactive, pacote ausente
+  apache2/httpd  bin ausente, systemd inactive, pacote ausente
+  traefik .... bin ausente, systemd inactive, pacote ausente
+  haproxy .... bin ausente, systemd inactive, pacote ausente
+  envoy ...... bin ausente, systemd inactive, pacote ausente
+  => Caddy e o UNICO reverse proxy do host.
+
+CADDY
+  Versao .....: v2.11.6
+  Binario ....: /home/tlandskron/.local/bin/caddy (modo 0700, tlandskron)
+  Processo ...: PID 5138, user tlandskron
+  Unit .......: medusa-caddy.service (systemd --user), enabled/active
+  Config .....: /home/tlandksron/.config/medusa-caddy/Caddyfile  [caminho real:
+                /home/tlandskron/.config/medusa-caddy/Caddyfile]
+  Modo admin .: OFF (API :2019 inacessivel; mudanca exige restart)
+  caddy validate: "Valid configuration" (executado, somente leitura)
+
+  LISTENERS
+    Porta 3000 TCP  192.168.15.250  http://medusa.escritorio.local:3000
+    Porta 3443 TCP  192.168.15.250  https://medusa.escritorio.local:3443
+    Porta 3443 UDP  192.168.15.250  HTTP/3 (QUIC) — alt-svc: h3=":3443"
+    Nao ha listener em 0.0.0.0 nem em [::].
+
+  UPSTREAM (ambos os blocos)
+    127.0.0.1:8766  (Davy-Jones)
+    header_up Host 127.0.0.1:8766
+    header_up -Authorization
+    header_up X-Medusa-Proxy-Key {$MEDUSA_PROXY_SECRET}   (segredo: N/AO EXIBIDO)
+    header_up X-Medusa-External-Host/Scheme, X-Medusa-Client-IP
+
+  RESTRICOES (identicas nos dois blocos)
+    @outside not remote_ip 192.168.15.0/24
+    abort @outside
+    Headers: X-Content-Type-Options nosniff, X-Frame-Options DENY,
+             Referrer-Policy same-origin
+
+  CERTIFICADOS
+    Leaf .......: issuer CN=Medusa Escritorio Local Intermediate CA
+                  SAN DNS:medusa.escritorio.local
+                  Validade: 2026-10-14 10:45:31 -> 22:45:31 UTC (12 HORAS)
+                  Rotacao automatica pelo Caddy a cada ~8h (confirmado no log)
+    Intermediaria: CN=Medusa Escritorio Local Intermediate CA
+                  Validade: 2026-10-13 18:05:31 -> 2026-10-20 18:05:31 UTC (7 DIAS)
+    CA Raiz ....: CN=Medusa Escritorio Local Root CA (presente; validade NAO
+                  inspecionada para evitar manipulacao do material PKI)
+    Chaves ...: NAO reproduzidas. Nenhum arquivo .key foi aberto.
+    Verificacao: openssl s_client => depth=1 CN=Medusa Escritorio Local
+                  Intermediate CA; "verify error:num=20 unable to get local
+                  issuer certificate" (CA raiz nao esta no trust store do host;
+                  confianca distribuida manualmente aos clientes)
+
+  COMPORTAMENTO OBSERVADO (comprovado por requisicao real)
+    HTTP :3000  + Host correto -> 302 Location: /login, Via: 1.0 Caddy
+    HTTP :3000  SEM Host correto -> 200
+    HTTPS :3443 + SNI correto   -> HTTP/2 302, location: /login, alt-svc h3=":3443"
+    HTTPS :3443 IP literal      -> falha TLS (000), sem SNI
+
+    ACHADO: com Host NAO correspondente, o Caddy devolve 200 em vez de 404/421.
+    Isso indica que a solicitacao alcança um site block padrao (provavelmente
+    um catch-all ou o primeiro bloco definido). O usuario ainda ve a aplicacao,
+    mas o proxy_key/originaisyvalidacao do davy.py passa a rejeitar
+    (proxy_origin_rejected), pois X-Medusa-External-Host sera incorreto.
+    Ver R5.
+
+  LISTENERS PREPARADOS / DESTINADOS A MIGRAÇÃO (nao ativos)
+    Caddyfile.https-final-prepared: bloco https://...:3000 SEM `bind`,
+      preparado para substituir o HTTP:3000 apos validacao de confianca
+      nos clientes Windows. NAO ESTA EM USO.
+    Caddyfile.ca-prepare: bloco HTTPS em 127.0.0.1:3443 com resposta estatica
+      de preparo. NAO ESTA EM USO.
+
+  NENHUMA CHAVE PRIVADA EXIBIDA NESTE RELATORIO.
+
+================================================================================
+7. TABELA 3 — RISCOS IDENTIFICADOS
+================================================================================
+
+Classe: INFO | LOW | MEDIUM | HIGH | CRITICAL
+
+--- R1 | HIGH ---
+Porta ......: 8766/TCP (100.126.89.55)
+Risco ......: Davy-Jones escuta DIRETAMENTE na interface Tailscale, sem passar
+              pelo Caddy e portanto SEM o filtro `remote_ip 192.168.15.0/24`.
+              Toda a restricao de origem da UI aplica-se apenas ao proxy. Este
+              e o unico caminho de acesso a aplicacao que a contorna.
+Evidencia ...: ss: `100.126.89.55:8766 LISTEN users:(("python3.11",pid=5136))`
+              cgroup: davy-jones.service
+              cmdline: davy.py --tailscale-ip 100.126.89.55
+              Teste: curl http://100.126.89.55:8766/health -> 200
+              ts-input: `-i tailscale0 -j ACCEPT` (sem filtro de porta)
+Mitigacao em vigor: exige Authorization Bearer (admin token) ou login humano;
+              allowlist de origins; CSRF; CSP. Ver R9.
+Recomendacao: restringir a origem Tailscale (allowlist de peers ACL) ou remover
+              o bind em tailscale0 se o acesso via Caddy for suficiente.
+
+--- R2 | MEDIUM ---
+Parametro ..: net.ipv4.ip_unprivileged_port_start = 0
+Risco ......: qualquer processo nao-root pode abrir portas reservadas (<1024).
+              Um processo de usuario comprometido poderia sequestrar portas
+              privilegiadas (80, 443, 53) que hoje estao livres.
+Evidencia ...: sysctl net.ipv4.ip_unprivileged_port_start = 0
+              (padrao Ubuntu: 1024)
+              Alterado durante testes de viabilidade de porta (MEDUSA-PORT-5080-
+              DIAG-01 e preparo do Caddy em :6000); o Caddy hoje NAO precisa
+              disso, pois usa 3000/3443.
+Recomendacao: reverter para 1024. Nenhuma funcionalidade atual depende do
+              valor 0. Risco de quebra: NENHUM (verificar antes).
+
+--- R3 | MEDIUM ---
+Portas .....: 3000/TCP (LAN), 3443/TCP+UDP (LAN)
+Risco ......: nao existe defesa em profundidade. INPUT esta em ACCEPT e nao ha
+              regra que negue trafego de ens18. A exclusao de origem depende
+              100% do matcher `@outside ... abort @outside` no Caddyfile. Uma
+              regressao de edicao nesse arquivo expoeria a Medusa UI a toda a
+              LAN sem qualquer barreira de firewall.
+Evidencia ...: iptables -S: INPUT policy ACCEPT; unica regra INPUT e ts-input
+              Caddyfile: @outside not remote_ip 192.168.15.0/24 / abort @outside
+Recomendacao: regra INPUT explicita para as portas do Caddy Limitando a
+              192.168.15.0/24 (defesa em profundidade, nao substituicao).
+
+--- R4 | MEDIUM ---
+Porta ......: 3443/TCP+UDP (certificado)
+Risco ......: a CA intermediaria expira em 2026-10-20 18:05:31 UTC (validade de
+              7 dias, criada 2026-10-13). Apos essa data o Caddy pode falhar ao
+              emitir/renovar leafs, quebrando o acesso HTTPS da UI. O leaf
+              atual tem validade de apenas 12h e rotaciona a cada ~8h.
+Evidencia ...: openssl x509 -in intermediate.crt -noout -dates
+              log medusa-caddy-runtime.log: "certificate renewed successfully"
+              NotAfter leaf: 2026-10-14 22:45:31 UTC
+Recomendacao: tratar o ciclo de vida da PKI (CA de longa duracao ou
+              redistribuicao antes de 20/10). Independente da migracao de porta.
+
+--- R5 | MEDIUM ---
+Porta ......: 3000/TCP
+Risco ......: requisicao sem Host correspondente recebe HTTP 200 em vez de
+              404/421. A solicitacao e encaminhada ao backend com
+              X-Medusa-External-Host incorreto; o davy.py rejeita com
+              403 proxy_origin_rejected, mas a resposta do Caddy antes disso
+              pode vazar comportamento/versao. Ausencia de catch-all explicito.
+Evidencia ...: curl http://192.168.15.250:3000/ (sem Host) -> 200
+              curl com Host medusa.escritorio.local:3000 -> 302
+Recomendacao: adicionar bloco explicito de rejeicao para hosts desconhecidos.
+
+--- R6 | MEDIUM ---
+Porta ......: 3000/TCP (127.0.0.1)
+Risco ......: a MESMA porta e usada por dois processos em enderecos distintos:
+              Caddy em 192.168.15.250:3000 e Grafana em 127.0.0.1:3000. Gera
+              ambiguidade em firewall, documentacao, monitoracao (Prometheus)
+              e em qualquer regra futura por (porta, origem). A porta 5080,
+              se reservada para a UI, elimina a colisao conceitual.
+Evidencia ...: ss: 192.168.15.250:3000 (caddy) e 127.0.0.1:3000 (docker-proxy)
+              nat DNAT: -d 127.0.0.1 --dport 3000 -> 172.20.0.5:3000
+Recomendacao: reservar portas distintas por funcao (5080 = Medusa UI).
+
+--- R7 | LOW ---
+Parametro ..: net.ipv4.conf.all.rp_filter = 2
+Risco ......: rp_filter em modo "loose" aceita pacotes com rota assimetrica.
+              Impacto limitado porque o host nao faz roteamento externo, mas
+              combina com ip_forward=1.
+Evidencia ...: cat /proc/sys/net/ipv4/conf/all/rp_filter -> 2
+Recomendacao: avaliar 1 se o host nao precisar de roteamento assimetrico.
+
+--- R8 | LOW ---
+Recurso ...: u0137-ollama (dual-homed)
+Risco ......: o container esta em infra-net (172.19.0.5) E u0137-ollama-net
+              (172.18.0.2). A segunda rede nao tem nenhum outro container,
+              indicando residuo de configuracao. Amplia a superficie interna.
+Evidencia ...: docker network inspect: u0137-ollama aparece nas duas redes
+              bridge u0137-ollama-net (172.18.0.0/16) com apenas 1 container
+Recomendacao: remover a rede nao utilizada ou documentar sua finalidade.
+
+--- R9 | LOW ---
+Porta ......: 8767/TCP
+Risco ......: rag-worker responde 401 sem token (comportamento CORRETO e
+              desejado). Registrado apenas para documentar que a autenticacao
+              esta ativa. Nao e falha.
+Evidencia ...: curl 127.0.0.1:8767/ -> 401
+Recomendacao: nenhuma. Manter.
+
+--- R10 | LOW ---
+Servico ...: ssh.service
+Risco ......: ssh.service consta como "disabled" enquanto ssh.socket esta
+              habilitado. Inicio por socket activation e o comportamento
+              correto do Ubuntu moderno, mas a aparencia de "SSH desabilitado"
+              em relatorios pode induzir a erro.
+Evidencia ...: systemctl is-enabled ssh -> disabled; is-active -> active
+              systemctl list-sockets: ssh.socket -> ssh.service (0.0.0.0:22)
+Recomendacao: documentar; nao "corrigir".
+
+--- R11 | LOW ---
+Porta ......: 22/TCP ([::]:22)
+Risco ......: SSH escuta em todas as interfaces IPv4 e IPv6. A interface ens18
+              tem endereco IPv6 GLOBAL (2804:7f4:c013:bada::/64) com rota
+              default, portanto o SSH pode ser alcancado pela Internet se o
+              roteador permitir. Exposicao real depende de ACL externa.
+Evidencia ...: ip -br addr ens18 -> 2804:7f4:c013:bada:be24:11ff:fefb:27c4/64
+              ip -6 route -> default via fe80::dac6:78ff:fea0:9798
+              ss: [::]:22 LISTEN v6only=1
+Classificacao: NOT_VERIFIED_EXTERNALLY
+Recomendacao: restringir SSH por ACL do roteador ou por regra ts-input/ens18.
+
+--- R12 | LOW ---
+Parametro ..: GF_SERVER_ROOT_URL (Grafana)
+Risco ......: aponta para https://grafana.escritorio.local:6001, hostname e
+              porta que nao existem no host. Nao causa redirecionamento hoje
+              (dominio nao resolve), mas e uma inconsistencia latente que
+              pode gerar conflito conceitual com uma futura reserva de portas.
+Evidencia ...: observability/docker-compose.yml linha 60
+Recomendacao: alinhar com a URL real quando o Grafana for publicado.
+
+--- R13 | INFO ---
+Item .......: lsof ausente
+Evidencia ...: which lsof -> nao encontrado
+Recomendacao: nenhuma. Correlacao feita por ss -p + /proc/net + inode.
+
+--- R14 | INFO ---
+Item .......: sockets UDP efemeros 55390/35427
+Evidencia ...: apareciam sem PID na coleta sem sudo, ausentes na coleta com
+              sudo e na seguinte. Bind 0.0.0.0 tipico de cliente UDP de saida.
+Recomendacao: nenhuma. Nao sao listeners.
+
+--- R15 | INFO ---
+Item .......: docker0 DOWN (172.17.0.1/16)
+Risco ......: bridge default presente mas sem container. Inofensivo.
+Evidencia ...: ip -br addr docker0 -> DOWN, route linkdown
+Recomendacao: nenhuma.
+
+RESUMO DE RISCOS POR CLASSE
+  CRITICAL ...: 0
+  HIGH .....: 1  (R1)
+  MEDIUM ...: 5  (R2, R3, R4, R5, R6)
+  LOW ......: 6  (R7, R8, R9, R10, R11, R12)
+  INFO .....: 3  (R13, R14, R15)
+  TOTAL ....: 15 riscos identificados
+
+Nenhuma porta foi classificada como vulneravel apenas por estar aberta. Todas as
+classificacoes se apoiam em evidencia observada.
+
+================================================================================
+8. CONFLITOS E VERIFICACOES ESPECIFICAS
+================================================================================
+
+PORTA 3000 — CONFLITO CONFIRMADO (multiplos processos, enderecos distintos)
+  192.168.15.250:3000  caddy (pid 5138)      Medusa UI HTTP
+  127.0.0.1:3000       docker-proxy (37511)  Grafana -> 172.20.0.5:3000
+  Sem colisao de bind (enderecos distintos). Risco conceitual: R6.
+
+PORTA 3443 — CONFLITO PROTOCOLO (mesma porta, TCP e UDP)
+  TCP 192.168.15.250:3443  caddy  (HTTPS)
+  UDP 192.168.15.250:3443  caddy  (HTTP/3 QUIC)
+  Intencional (Caddy anuncia alt-svc h3=":3443"). Uma migracao para 5080 deve
+  considerar AMBOS os protocolos: sem UDP/5080 o servidor后退a para HTTP/2 TCP,
+  com perda de desempenho mas nao de funcionalidade.
+
+CONFLITOS IPv4 / IPv6
+  Nenhum conflito de bind observado. Os listeners IPv6 (sshd [::]:22, tailscaled
+  [fd7a::]:36988, chronyd [::1]:323) sao v6only=1 e nao colidem com IPv4.
+  NAO EXISTE dual-stack: nenhum servico escuta simultaneamente em IPv4 e IPv6
+  no mesmo socket.
+
+SERVICOS ESPERADOS MAS AUSENTES
+  Loki .................. NAO INSTALADO (etapa pendente do projeto)
+  Alertmanager .......... NAO INSTALADO
+  Promtail / Alloy ...... NAO INSTALADO
+  cAdvisor .............. NAO INSTALADO (incompativel com Docker 29; ver
+                           OBSERVABILITY-MEDUSA.md secao 8)
+  Nginx / Apache / Traefik NAO INSTALADOS
+  Mediawiki/OpenWebUI ... NAO INSTALADOS neste host (Open WebUI planned no host
+                           davy-jones-hermes / 192.168.15.231)
+
+PORTAS CONFIGURADAS MAS SEM LISTENER
+  Nenhuma no host.
+  No Docker: infra-redis (6379) e infra-postgres (5432) tem porta Exposed mas
+  NENHUMA publicacao — comportamento intencional (acesso restrito a rede
+  bridge infra-net). Nao e "porta inativa"; e isolamento por design.
+  obs-node-exporter (9100) idem.
+
+PORTAS PUBLICADAS DESNECESSARIAMENTE
+  Nenhuma identificada em termos de segurança: todas as 6 publicações usam
+  127.0.0.1 e nenhuma em 0.0.0.0. Docker confirmou 6 DNAT, todos com
+  `-d 127.0.0.1/32`.
+
+DISPONIBILIDADE DA PORTA 5080 — CONFIRMADA EM IPv4 E IPv6
+  ss -H -lnt   "sport = :5080" ....... vazio  (IPv4 livre)
+  ss -H -lnt6  "sport = :5080" ....... vazio  (IPv6 livre)
+  ss -H -lntu  "sport = :5080" ....... vazio  (ambos livres)
+  netstat -lnt | grep :5080 .......... vazio
+  /proc/net/{tcp,tcp6,udp,udp6} grep ':13D8' (hex 5080) .... nenhuma entrada
+  docker ps -a | grep 5080 ........... nenhum container
+  iptables -S | grep 5080 ............ nenhuma regra
+  CONCLUSAO: 5080/TCP e 5080/UDP estao LIVRES em IPv4 e IPv6, sem reserva em
+  firewall, sem container associado e sem regra. VIABILIDADE: CONFIRMADA.
+
+VERIFICACAO DA LISTA DE PORTAS SOLICITADAS
+  3000  ATIVA  (2 sockets: caddy LAN + docker-proxy loopback)
+  3001  LIVRE  (nenhum listener IPv4/IPv6)
+  3443  ATIVA  (TCP + UDP, caddy, LAN)
+  5080  LIVRE  (IPv4 e IPv6 confirmados)
+  8765  ATIVA  (medusa-core, loopback)
+  8766  ATIVA  (davy-jones, loopback + tailscale0)
+  8767  ATIVA  (rag-worker, loopback)
+
+================================================================================
+9. RECOMENDACOES DE ARQUITETURA (NAO EXECUTADAS)
+================================================================================
+
+9.1 PADRONIZACAO DE PORTAS
+  Reservar faixas por funcao e documentar em registro unico:
+    1024-1999   infraestrutura de sistema (SSH, DNS, NTP)
+    2000-2999   reverse proxy / acesso externo (Medusa UI)
+    3000-3999   interfaces de usuario (Grafana)
+    5000-5999   servicos de aplicacao publicados em loopback
+    8000-8999   servicos internos (core, rag-worker, backend)
+    9000-9999   observabilidade
+    11434       Ollama (padrao de fato do projeto)
+  A reserva 5080 -> Medusa UI encaixa-se nessa convencao: faixa de proxy, porta
+  livre, sem colisao.
+
+9.2 SEPARACAO INTERNO / EXTERNO
+  Regra ja aplicada e funcionando: TODO backend em 127.0.0.1; SOMENTE o reverse
+  proxy em IP de LAN. Manter esse padrao. Ao adicionar qualquer servico:
+  - se for acessado pelo usuario via navegador -> publicar atras do Caddy
+  - se for acessado so por outros containers -> NAO publicar
+  - se for acessado so pelo host -> 127.0.0.1
+
+9.3 ISOLAMENTO POR LOOPBACK
+  Estado: BOM. 13 sockets em 127.0.0.1 ou loopback. Manter Postgres e Redis sem
+  publicacao. Node Exporter tambem deve permanecer sem publicacao (o Prometheus
+  alcanca via rede bridge).
+
+9.4 REVERSE PROXY
+  Caddy e unico proxy e esta bem configurado (TLS interno, filtro de origem,
+  headers de seguranca, upstream autenticado por proxy_key).
+  Melhorias sugeridas:
+  - bloco explicito de rejeicao para Host desconhecido (mitiga R5)
+  - publicar Grafana e Prometheus atras do proxy quando necessario, em vez de
+    depender de SSH tunnel
+  -knife caution: nao aumentar a superficie do Caddy alem do necessario
+
+9.5 ACESSO VIA TAILSCALE
+  O padrao atual permite que QUALQUER peer Tailscale alcance QUALQUER porta
+  (ts-input sem filtro). Recomenda-se:
+  - ACL de peers para restringir quem acessa 22 e 8766
+  - ou remover o bind em tailscale0 do davy-jones (R1), deixando o Caddy como
+    unico caminho
+
+9.6 REDUCAO DE EXPOSICAO
+  - reverter ip_unprivileged_port_start para 1024 (R2) — ganho de seguranca sem
+    custo funcional
+  - adicionar regra INPUT limitando portas do Caddy a 192.168.15.0/24 (R3)
+  - resolver o ciclo de vida da PKI antes de 20/10 (R4)
+  - remover a rede u0137-ollama-net nao utilizada (R8)
+  - avaliar rp_filter=1 (R7)
+
+9.7 DOCUMENTACAO DAS PORTAS
+  Manter um registro unico e versionado, por exemplo
+  /home/tlandskron/txt/MEDUSA-PORT-REGISTRY.md, contendo a Matriz da secao 2.
+  Este relatorio e a primeira versao desse registro. Atualizar a cada
+  publicacao nova. Registrar tambem as portas CONFIGURADAS mas nao publicadas,
+  para evitar conclusao errada de que "esta porta esta livre".
+
+9.8 PREVENCAO DE CONFLITOS FUTUROS
+  - antes de publicar qualquer porta, consultar este registro e o
+    ss -lntu no host
+  - reservar portas em faixa documentada, evitando portas de terceiros
+  - evitar reutilizar portas de terceiros em proxy (o caso 3000 e um exemplo
+    concreto do problema)
+  - nao usar portas <1024 em servico de usuario (mantem ip_unprivileged_port_start
+    em 1024)
+
+9.9 VIABILIDADE DE RESERVAR 5080/TCP PARA A MEDUSA UI HTTPS
+  VEREDITO: VIÁVEL — sem alterar a configuração atual.
+
+  Fundamentacao (todas verificadas nesta auditoria):
+   1. 5080 livre em IPv4 e IPv6, sem regra de firewall, sem container, sem
+      entrada em /proc/net/*.
+   2. ip_unprivileged_port_start=0 permite bind por processo de usuario — o
+      Caddy roda como tlandskron. (Se R2 for corrigido para 1024, 5080 continua
+      acima de 1024 e o bind continua permitido. Os dois cenarios sao seguros.)
+   3. A CA e o certificadoleaf cobrem medusa.escritorio.local e sao emitidos
+      independentemente da porta; o SAN nao inclui porta. Nenhuma emissao nova
+      e necessaria por trocar a porta.
+   4. Nenhum container publica 5080; nenhuma regra DOCKER conflita.
+   5. O padrao de bind (192.168.15.250) e o filtro de origem
+      (@outside/abort) sao replicaveis identicamente.
+
+  PRE-REQUISITOS (identificados, nao executados):
+   a) Acrescentar "https://medusa.escritorio.local:5080" ao array `origins` em
+      davy-jones/config/human_auth.json. Sem isso, TODAS as requisicoes humanas
+      retornam 403 proxy_origin_rejected (davy.py linha ~359).
+   b) Definir se 5080 SUBSTITUI ou COEXISTE com 3000/3443. A coexistencia e
+      recomendada como fase aditiva.
+   c) Considerar UDP/5080 para manter HTTP/3 (o cert atual anuncia h3=":3443").
+   d) Validar a cadeia de confianca nos clientes Windows (nao verificavel deste
+      host).
+   e) Atualizar os testes que fixam :3000 e :3443
+      (davy-jones/tests/auth_tls_live_check.py, test_human_auth.py,
+      auth_ui_fixture_check.py).
+
+  Detalhamento completo em MEDUSA-PORT-5080-DIAG-01.
+
+================================================================================
+10. CONEXOES ESTABELECIDAS RELEVANTES (arquitetura)
+================================================================================
+
+Apenas 5 conexoes estabelecidas no momento da coleta. Nenhuma e uma porta em
+escuta; sao relevantes para compreender a arquitetura:
+
+  100.126.89.55:22  <- 100.94.111.91:64286   sshd-session (minha sessao de auditoria)
+  100.126.89.55:22  <- 100.94.111.91:54286   sshd-session (sessao persistente)
+  [2804:...]:48428 -> [2600:3c0d::...]:443  tailscaled -> DERP/outra naco (coordenacao)
+  [2804:...]:32886 -> [2606:b740:1:20::]:443 tailscaled
+  [2804:...]:53860 -> [2606:b740:49::]:80   tailscaled
+
+  Acoamento: a auditoria e o acesso administrativo chegam via Tailscale (SSH em
+  100.126.89.55:22 a partir de 100.94.111.91). Nao ha conexao direta da LAN
+  registrada. Nao ha trafego de container para container em sockets
+  ESTABLISHED porque os acessos internos sao curtos (HTTP request/response) e nao
+  foram capturados no instante da coleta.
+
+================================================================================
+11. VALIDACAO FINAL (secao 12 do procedimento)
+================================================================================
+
+11.1 REPETICAO DA COLETA DE LISTENERS
+  Coleta inicial  : 26 sockets (18 TCP LISTEN + 8 UDP UNCONN)
+  Coleta de validacao: 26 sockets (18 TCP LISTEN + 8 UDP UNCONN)
+  Diferencas      : NENHUMA. Portas, PIDs, enderecos e estados identicos.
+  Observer        : os 2 sockets UDP efemeros (55390/35427) da coleta sem sudo
+                    NAO reapareceram, confirmando que sao efemeros de saida e
+                    nao listeners (ver R14).
+
+11.2 NENHUM SERVICO MODIFICADO OU REINICIADO
+  Comparando PIDs entre o inicio e o fim da auditoria:
+    caddy .............. PID 5138  (inalterado)
+    sshd .............. PID 7236  (inalterado)
+    tailscaled ......... PID 4837  (inalterado)
+    systemd-resolved ... PID 800   (inalterado)
+    chronyd ............ PID 4885  (inalterado)
+    systemd-networkd ... PID 1669  (inalterado)
+    medusa-core ........ PID 5134  (inalterado)
+    rag-worker ......... PID 5135  (inalterado)
+    davy-jones ......... PID 5136  (inalterado)
+    docker-proxy ....... PIDs 37511, 6067, 6091, 6300, 6391, 46091 (inalterados)
+  Nenhum uptime de container foi alterado (todos permanecem "Up 4 days").
+  Nenhum servio foi parado. Nenhum reboot.
+
+11.3 NENHUMA CONFIGURACAO ALTERADA
+  Arquivos verificados por mtime antes e depois (inalterados):
+    /home/tlandskron/.config/medusa-caddy/Caddyfile          2026-10-02 10:06:49
+    /home/tlandskron/davy-jones/config/human_auth.json       2026-10-02 09:52:46
+    /home/tlandskron/observability/docker-compose.yml        (nao alterado)
+  caddy validate: "Valid configuration" (leitura).
+  Nenhuma regra iptables/nftables foi adicionada (chains inalteradas).
+  Nenhum firewall, Docker, Caddy, Tailscale ou DNS foi tocado.
+
+11.4 RELATORIOS GRAVADOS
+  /home/tlandskron/txt/MEDUSA-NET-PORT-AUDIT-01.txt   (este relatorio)
+  /home/tlandskron/log/MEDUSA-NET-PORT-AUDIT-01.log   (evidencia bruta)
+  Ambos owner tlandskron, grupo tlandskron, modo 600.
+  Conteudo do .log: linhas ss, /proc/net/*, docker, ip, iptables,
+  systemctl list-sockets, conexoes. Nenhum segredo presente.
+
+11.5 PROPRIEDADE E PERMISSOES CONFIRMADAS
+  tlandskron:tlandskron 600 /home/tlandskron/txt/MEDUSA-NET-PORT-AUDIT-01.txt
+  tlandskron:tlandskron 600 /home/tlandskron/log/MEDUSA-NET-PORT-AUDIT-01.log
+  (verificado via stat apos a escrita)
+
+================================================================================
+12. RESUMO QUANTITATIVO
+================================================================================
+
+Portas TCP distintas (numeros unicos) ........ 14
+   22, 53, 3000, 3443, 5001, 57178, 6333, 8081, 8765, 8766, 8767, 9090, 11434, 36988
+
+Portas UDP distintas (numeros unicos) ......... 5
+   53, 323, 546, 3443, 41641
+
+Total de portas numericas distintas ........... 18
+   (3443 aparece em TCP e UDP; 53 em TCP e UDP)
+
+Sockets/listeners em escuta ................... 26
+   18 TCP LISTEN + 8 UDP UNCONN
+
+Servicos identificados ....................... 10 unidades systemd
+   tailscaled, systemd-resolved, chrony, systemd-networkd, ssh (socket),
+   docker, medusa-caddy (user), medusa-core (user), medusa-rag-worker (user),
+   davy-jones (user)
+   (+ dbus, snapd, polkit, multipathd, qemu-guest-agent, etc. como sockets
+   locais unnamed/AF_UNIX, sem porta de rede)
+
+Containers com portas publicadas no host ...... 6
+   obs-grafana, obs-prometheus, medusa-searxng, medusa-docling, infra-qdrant,
+   u0137-ollama
+
+Containers sem porta publicada ................ 3
+   obs-node-exporter, infra-redis, infra-postgres
+
+Containers parados (reservam config sem listener) .. 0
+   Nenhum. Todos os 9 estao em execucao.
+
+Portas vinculadas ao loopback (127.0.0.1) ..... 9 TCP + 2 UDP
+   TCP: 3000, 5001, 6333, 8081, 8765, 8766, 8767, 9090, 11434
+   UDP: 323
+   (alem de 127.0.0.53:53 e 127.0.0.54:53 em TCP/UDP, stubs de DNS)
+
+Portas potencialmente acessiveis pela LAN ...... 3 TCP + 2 UDP
+   TCP: 22, 3000, 3443
+   UDP: 3443 (HTTP/3), 41641 (Tailscale WireGuard)
+   Confirmado por teste local: portas loopback RECUSAM conexao via 192.168.15.250
+   (todas retornaram 000). Exposicao externa real: NOT_VERIFIED_EXTERNALLY.
+
+Portas potencialmente acessiveis pelo Tailscale .. 4 TCP + 1 UDP
+   TCP: 22, 8766, 57178, 36988
+   UDP: 41641
+   ts-input aceita TODO trafego de tailscale0 sem filtro de porta.
+   Confirmado: 100.126.89.55:8766 -> 200; 100.126.89.55:22 -> ACEITA.
+
+Portas sem responsavel identificado .......... 0
+   Todos os 26 sockets foram atribuidos a processo, cgroup e servico.
+
+Riscos identificados .......................... 15
+   CRITICAL 0 | HIGH 1 | MEDIUM 5 | LOW 6 | INFO 3
+
+Disponibilidade da porta 5080 ................. LIVRE (IPv4 e IPv6 confirmados)
+   Sem listener, sem regra de firewall, sem container, sem entrada em /proc/net.
+
+Classificacao final: AUDIT_COMPLETE
+
+================================================================================
+FIM DO RELATORIO — MEDUSA-NET-PORT-AUDIT-01
+Somente leitura. Nenhuma alteracao aplicada.
+================================================================================
