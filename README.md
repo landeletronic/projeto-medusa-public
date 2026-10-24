@@ -7,6 +7,10 @@
 [![Ambiente](https://img.shields.io/badge/ambiente-Ubuntu%2026.04%20LTS-orange)](#host)
 [![Geração](https://img.shields.io/badge/gera%C3%A7%C3%A3o%20jur%C3%ADdica-desabilitada-red)](#fronteira-legal)
 
+## Mapa completo da arquitetura
+
+![Mapa completo da arquitetura do Davy-Jones e Medusa](assets/images/mapa-arquitetura-medusa-davy-jones.png)
+
 ---
 
 ## Índice
