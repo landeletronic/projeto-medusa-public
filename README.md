@@ -344,7 +344,7 @@ projeto-medusa/
 ├── .githooks/
 │   └── pre-push                   # bloqueia push de conteúdo sensível para o público
 ├── .github/workflows/
-│   └── guard-sensitive.yml        # CI que impõe a regra no servidor (incontornável)
+│   └── guard-sensitive.yml        # CI que varre o histórico inteiro (detector)
 ├── .opencode/rules/               # regra do opencode: não pergunta, não publica
 ├── scripts/                       # setup-repo · publish-public · selftest
 ├── config/                        # configuração de infraestrutura
@@ -463,9 +463,13 @@ Cobertura dos testes: contrato de fila, idempotência, capacidade de admissão, 
   |---|---|---|---|
   | 1 | Não rastrear | `.gitignore` (bloco mirror) | sim (`git add -f`) |
   | 2 | Não enviar | `.githooks/pre-push` | sim (`--no-verify`) |
-  | 3 | **Não aceitar no servidor** | `.github/workflows/guard-sensitive.yml` | **não** |
+  | 3 | **Detectar no servidor** | `.github/workflows/guard-sensitive.yml` | o push entra, mas o run fica **vermelho** |
   | 4 | Publicar filtrado | `scripts/publish-public.{sh,ps1}` | — |
   | 5 | Agente não pergunta | `AGENTS.md` + `.opencode/rules/` | — |
+
+  Ruleset ativa no repositório público (`25828972`): **proíbe deletar `main` e
+  force-push**. A camada 3 é o detector no servidor — roda em qualquer máquina,
+  sem instalar nada; a imposição de conteúdo vem da camada 4.
 
   ```sh
   ./scripts/setup-repo.sh        # ativa a camada 2 (1x por clone)

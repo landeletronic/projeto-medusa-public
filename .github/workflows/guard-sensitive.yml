@@ -1,5 +1,5 @@
 # =============================================================================
-# guard-sensitive — CAMADA 3 (a autoridade)
+# guard-sensitive — CAMADA 3 (detector no servidor)
 #
 # As camadas 1 e 2 (gitignore + hook pre-push) moram na maquina e podem ser
 # contornadas (git add -f, git push --no-verify, maquina sem hook instalado).

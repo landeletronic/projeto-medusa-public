@@ -35,12 +35,30 @@ Esse material esteve **público** de 21 a 25/10/2026. Trate tudo o que está lá
 |---|---|---|---|---|
 | 1 | Não rastrear | `.gitignore` | qualquer máquina | sim (`git add -f`) |
 | 2 | Não enviar | `.githooks/pre-push` | qualquer máquina, após setup | sim (`--no-verify`) |
-| 3 | **Não aceitar no servidor** | `.github/workflows/guard-sensitive.yml` | **GitHub, sempre** | **não** |
+| 3 | **Detectar no servidor** | `.github/workflows/guard-sensitive.yml` | **GitHub, sempre** | push direto entra, mas o **run fica vermelho** |
 | 4 | Publicar filtrado | `scripts/publish-public.sh` / `.ps1` | qualquer máquina | — |
 | 5 | Agente não pergunta | `AGENTS.md` + `.opencode/rules/` | qualquer agente, qualquer SO | — |
 
-A **camada 3 é a autoridade**. As outras são conforto: se qualquer uma falhar, o
-GitHub recusa o conteúdo e o workflow fica vermelho.
+**O que a camada 3 faz e o que ela não faz.** Ela roda no GitHub, não na sua
+máquina: um push feito com `--no-verify`, de outra máquina ou por outro agente
+é **recebido pelo GitHub e imediatamente marcado como falha** (run vermelho,
+com `##[error] commit <sha> contem arquivo sensivel` e a lista de commits).
+Não depende de nada instalado localmente.
+
+O que ela **não** faz sozinha: impedir que o conteúdo chegue — o push já
+aconteceu quando o check roda. Isso é limitação da planta gratuita do GitHub
+sem fluxo de PR. Duas defesas cobrem isso:
+
+- **quem envia só envia via `scripts/publish-public.*`** (camada 4), que filtra
+  o histórico **antes** do push — é o caminho sancionado;
+- **optional, hard gate:** regra `pull_request` na ruleset do GitHub torna o
+  `main` imutável fora de PR, e o check passa a valer como trava de merge
+  (exige mudar o fluxo de trabalho — decidir caso a caso).
+
+A **ruleset ativa** hoje (`25828972`) impõe no servidor: proibição de **delete**
+do `main` e de **force-push** (`non_fast_forward`). Não usei
+`required_status_checks` porque ele congela o branch: o check só existe depois
+do push, e o GitHub recusa o próprio push legítimo.
 
 ---
 
@@ -66,7 +84,7 @@ público — ele **não existe** no repositorio publico, em nenhum commit.
 
 ```bash
 git push public main          # bloqueado pelo hook (camada 2)
-git push public main --no-verify   # aceito pelo git, REJEITADO pelo GitHub (camada 3)
+git push public main --no-verify   # passa pelo git -> run do CI fica VERMELHO
 git add -f docs/sessao/acesso-ao-host-medusa.json
 git commit -m "..." -- public   # o arquivo continua no privado; nunca o exporte
 ```

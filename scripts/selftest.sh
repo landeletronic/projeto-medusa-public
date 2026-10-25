@@ -105,7 +105,7 @@ fi
 
 # --- CAMADA 3: workflow de CI -------------------------------------------------
 echo ""
-echo "Camada 3 — CI no GitHub (incontornavel)"
+echo "Camada 3 — CI no GitHub (detector no servidor)"
 if [ -f .github/workflows/guard-sensitive.yml ]; then
     ok ".github/workflows/guard-sensitive.yml existe"
 else

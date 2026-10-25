@@ -5,7 +5,7 @@
 #
 #   1) .gitignore ............... impede `git add` acidental
 #   2) .githooks/pre-push ....... bloqueia push para o repositório PÚBLICO
-#   3) .github/workflows/... .... bloqueia no servidor (incontornável)
+#   3) .github/workflows/... .... varre TODO o historico no servidor (detector)
 #   4) scripts/publish-public.* . remove do histórico antes de publicar
 #   5) AGENTS.md / .opencode .... o agente NÃO pergunta, apenas exclui
 #

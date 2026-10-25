@@ -15,7 +15,8 @@
 # via `git check-ignore`, que ja entende curinga e comentarios.
 #
 # Escape de emergencia: MEDUSA_PUSH_ALLOW_SENSITIVE=1 (o CI do GitHub ainda
-# vai recusar no servidor — a camada 3 nunca e contornavel).
+# vai acusar a falha — o run fica vermelho; a imposicao de conteudo e da
+# publicacao filtrada, nao do CI).
 # =============================================================================
 set -u
 

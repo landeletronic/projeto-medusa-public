@@ -119,15 +119,18 @@ echo "publish-public: enviando para $PUBLIC_URL"
 if ! git -C "$tmp/mirror.git" push --no-verify --force \
         "$PUBLIC_URL" "refs/heads/$BRANCH:refs/heads/$BRANCH"; then
     echo "" >&2
-    echo "ERRO: o GitHub recusou o envio." >&2
+    echo "ERRO: o GitHub recusou o envio. Motivo reportado acima." >&2
     echo "" >&2
-    echo "  Se a mensagem for 'non-fast-forward' / 'Updates rejected', o historico" >&2
-    echo "  PRIVADO foi reescrito (rebase/amend) depois da ultima publicacao." >&2
-    echo "  A ruleset 'guard-sensitive' do repositorio publico proibe force-push," >&2
-    echo "  de proposito. Nesse caso:" >&2
-    echo "    1. confirme que o novo historico nao traz arquivo do manifesto;" >&2
-    echo "    2. retire temporariamente a regra non_fast_forward na ruleset 25828972;" >&2
-    echo "    3. publique e recoloque a regra." >&2
+    echo "  Possibilidades:" >&2
+    echo "  a) 'non-fast-forward' / 'Updates rejected':" >&2
+    echo "     o historico PRIVADO foi reescrito (rebase/amend) depois da ultima" >&2
+    echo "     publicacao. A ruleset 25828972 do publico proibe force-push de" >&2
+    echo "     proposito. Confirme que o novo historico nao traz arquivo do" >&2
+    echo "     manifesto, retire temporariamente a regra non_fast_forward," >&2
+    echo "     publique e recoloque a regra." >&2
+    echo "  b) 'Required status check ... is expected':" >&2
+    echo "     alguem adicionou required_status_checks na ruleset. Esse check so" >&2
+    echo "     existe DEPOIS do push, o que congela o branch - remova a regra." >&2
     echo "" >&2
     exit 1
 fi
