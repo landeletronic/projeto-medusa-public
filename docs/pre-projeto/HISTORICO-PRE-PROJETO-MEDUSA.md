@@ -1,8 +1,13 @@
-# HISTÓRICO PRÉ-PROJETO — MEDUSA (Período: mediados de agosto → outubro de 2026)
+# HISTÓRICO PRÉ-PROJETO — MEDUSA (Fase 1: ago/2026 · Fase 2: set–out/2026)
 
-> **Documento de referência histórica.** Consolida todo o material do diretório
-> `Y:\Machine Learning\medusa\` (espelho dos trabalhos executados em
-> `C:\AI\JURIDICO-AI`, máquina **IA-SERVER**) que precedeu o atual **projeto-medusa**.
+> **Documento de referência histórica.** Consolida todo o material dos dois acervos
+> que precederam o atual **projeto-medusa**:
+>
+> | Parte | Fonte | Período | Ambiente |
+> |---|---|---|---|
+> | **I** | `Y:\Machine Learning\medusa\` (espelho dos trabalhos em `C:\AI\JURIDICO-AI`, máquina **IA-SERVER**) | 13/08 → 17/08/2026 | Windows 11 + WSL2 + Docker Desktop |
+> | **II** | `C:\Intel\medusa\projeto-medusa_e_davy-jones_17092026\` | 12/09 → 25/10/2026 | Proxmox VE + VM Ubuntu ("Caribbean Pirates GPT"/Davy-Jones/Medusa) |
+>
 > Objetivo: servir de base para DevOps/engineers futuros — hardware real, versões,
 > configurações funcionais, decisões e lições aprendidas.
 
@@ -63,7 +68,59 @@ Entre **13 e 18/08/2026**, um projeto chamado internamente de **"Pacote Jurídic
 
 ⚠️ Detalhes que costumam morder:
 - A v1.0/guia fala em **9950X**, mas a máquina real é **9950X3D** — usar os valores auditados.
-- RAM XMP: módulos 6000 MT/s travados em **4800** — considerar tunar no BIOS se workload recomprimir.
+- RAM XMP: módulos 6000 MT/s rodando em **4800** — confirmado tanto no Windows (17/08, `02-CPU-RAM.txt`)
+  quanto no Proxmox (16/09 — `Configured Memory Speed: 4800 MT/s`). Ajuste executado posteriormente pelo
+  operador — ver **§3.1 BIOS/UEFI**.
+
+
+### 3.1 BIOS/UEFI do servidor (documentada — placa ASUS TUF GAMING B650M-E WIFI)
+
+Ajuste de BIOS feito pelo operador nesta fase, com checklist de estado desejado e
+diagnósticos antes/depois. Fontes: `docs-old/Checklist de BIOSUEFI (ASUS TUF GAMING B650M-E WIFI).xlsx`,
+`docs-old/BIOS.pdf` (1 página com 9 screenshots de telas de BIOS), `docs-old/proxmox_diagnostico_pve-asus_20260916_183836_editado.txt`
+e `...20260918_195922.txt` · consultado em 25/10/2026.
+
+#### Checklist oficial do acervo (fonte: XLSX)
+
+| Item (BIOS ASUS) | Estado desejado | Situação no diagnóstico pré-ajuste |
+|---|---|---|
+| **SVM Mode** | Enabled | ✅ OK — `kvm_amd` ativo |
+| **IOMMU** | Enabled | ✅ OK — AMD-Vi no dmesg |
+| **Secure Boot** | Disabled | ✅ OK — `secureboot:0` |
+| **Above 4G Decoding** | Enabled | ⚠️ Verificar — obrigatório para mapear 32 GB de VRAM no passthrough |
+| **Re-Size BAR Support** | Enabled/Auto | ⚠️ Verificar — impacta desempenho do driver NVIDIA no guest |
+| **Initiate Graphic Adapter / Primary Display** | **IGFX (iGPU AMD)** | ⚠️ Verificar — crítico: a 5090 não pode ser a GPU de console |
+| **PCIEX16 Bandwidth (slot da 5090)** | **Gen5** | ⚠️ Negociando Gen4 — dmesg mostra 16 GT/s em link capaz de 32 GT/s |
+| **Fast Boot** | Disabled | ✅ Recomendado (reset de GPU mais limpo) |
+| **EXPO/XMP (memória)** | Opcional | ⚠️ Rodando 4800 MT/s em pentes de 6000 (Corsair CMK32GX5M2B6000C38) — EXPO desativado |
+
+#### Configuração executada pelo operador (confirmada em conversa, 25/10/2026)
+
+1. **XMP/EXPO habilitado** — elevar a DDR5-6000 dos pentes Corsair (antes travados em 4800);
+2. **PCIEX16 habilitado em Gen5 (PCIe 5x)** — forçar o slot da RTX 5090 a negociar Gen5 em vez de Gen4.
+
+> ⚠️ **Nota de validação:** o acervo NÃO contém um log pós-ajuste confirmando essas duas
+> mudanças em execução (o último diagnóstico Proxmox é de 18/09, ainda em Gen4/4800).
+> **Para um DevOps futuro, revalidar na próxima janela:**
+>
+> ```bash
+> # Velocidade de RAM efetiva (esperado: 6000 MT/s com EXPO ativo)
+> dmidecode -t 17 | grep -i "Configured Memory Speed"
+> # Link PCIe da RTX 5090 (esperado: 32 GT/s = Gen5 x16)
+> lspci -vv -s $(lspci | grep -i nvidia | cut -d' ' -f1) | grep -i lnksta
+> # via nvidia-smi, alternativa no guest:
+> nvidia-smi -q | grep -iA3 "PCIe Generation"
+> ```
+
+Lições do item (representadas também nos diagnósticos):
+- Diminuir uma geração PCIe (Gen5→Gen4) **não impede** o passthrough de funcionar;
+  validações de 13–18/09 já assumiam Gen4 em execução — mas o checklist tratava
+  "Gen5" como meta de desempenho, não como pré-requisito.
+- O NVMe Kingston NV3 (SM2268XT2, DRAM-less) reportou limitação estrutural de
+  **PCIe x2 @ 16 GT/s** ("31.5 Gb/s available bandwidth") — *afetando apenas o
+  throughput de armazenamento, não a GPU*.
+- A máquina tem **iGPU AMD** cuja tarefa (no BIOS) é ser a GPU de console no host,
+  deixando a 5090 livre para o passthrough da VM "Medusa" (VMID 1001).
 
 ---
 
@@ -328,6 +385,187 @@ nenhum "access denied"; 3 nomes com mojibake ainda legíveis via wildcard; 04-WS
 
 ---
 
-*Documento gerado em 25/10/2026 a partir de leitura somente leitura de 88 itens de
-`Y:\Machine Learning\medusa\`. Fonte primária dos fatos técnicos: os diagnósticos
-v1 e v2 (17/08/2026), que capturaram o estado real da máquina no dia.*
+# PARTE II — Pré-projeto Fase 2: "projeto-medusa + davy-jones" (12/09 → 25/10/2026)
+
+## 14. Fonte e dimensionalidade do acervo
+
+Diretório-fonte: `C:\Intel\medusa\projeto-medusa_e_davy-jones_17092026\`
+**1.257 arquivos · 88 diretórios · ~2,0 GB** — leitura 100% concluída em 25/10/2026 (sem arquivos ilegíveis;
+`.tar.gz`/`.deb`/`.so`/`.sqlite3` são binaries íntegros).
+
+Composição por tipo:
+
+| Tipo | Qtde | Conteúdo |
+|---|---:|---|
+| `.log` | 456 | logs de execução, 1 para cada script/validação rodada |
+| `.sh` | 210 | scripts de instalação/auditoria (famílias U0/C/H/M4/M5/MEDUSA) |
+| `.py` | 152 | pipelines RAG, gates de evidência, diagnósticos |
+| `.json` | 123 | resultados/validações com data/hora |
+| `.md` | 85 | documentação por etapa |
+| `.txt` | 67 | relatórios e cópias textuais |
+| `.tar.gz` + `.sha256` | 43+33 | backups diários com hash |
+| PDFs/DOCX/PNG | 16/6/14 | relatórios, manuais (Manual_Usuario_Medusa_Evidencia_Juridica.pdf, ia-server-diagnostic.pdf, kit visual) |
+
+## 15. Cronologia documentada da Fase 2
+
+| Data (2026) | Evento | Evidência no acervo |
+|---|---|---|
+| 12–13/09 | Diagnóstico do hardware (mesmo equipamento da Fase 1, migrado) | `docs-old/ia-server-diagnostic-20260913-210159.log` |
+| 16–18/09 | Diagnósticos do Proxmox `pve-asus` (IOMMU/VFIO ok; árvore PCI) + **checklist BIOS** | `docs-old/proxmox_diagnostico_pve-asus_20260916/18*.txt`, **XLSX BIOS** |
+| 17/09 | Arquitetura-alvo: **00-arquitetura-geral.md** (PROPOSTA — 24 seções); criação da pasta datada `17092026` | `md/00-arquitetura-geral.md` |
+| 17/09 | Kit visual do projeto (imagens "medusa e davy-jones") | `png/ChatGPT Image 19 de set…` |
+| 19/09 | Status oficial do projeto; **112 logs no dia** (dia mais intenso) | `md/MEDUSA_Status_Projeto_2026-09-19_multiwan-gmail.md` |
+| 20/09 | Cadeia **Calypso** (gateway do Codex): C1 → C12 com 12 revisões (sandbox, userns/apparmor/seccomp, systemd) | `script/C*.sh`, `log/C*.log` |
+| 21/09 | Auditorias Mem0/Qdrant 2560 (coleções hermes_eng_memory_v2, mem0migrations, medusa_docs_v1) | `log/AUDIT-MEM0-QDRANT-2560-20260921*.log` |
+| 22/09 | **M4.2/M4.3** — implantação do Docling + documentação por documento | `txt/M4.2-I-docling-implementation*`, `script/M4.2-I-implantar-docling.sh` |
+| 23–27/09 | **M4.4 → M4.21** — pipeline RAG limpo: embeddings Qdrant, retriever + stress, gates de evidência, verificação ambígua/adversarial, layout-aware, tabelas | `script/M4.*.py` |
+| 25/09 | **Estado oficial versionado** `2026.09.25-r1` (checkpoint M4/M5 + regras permanentes) | `md/01-estado-oficial-projeto-caribbean-pirates.md` |
+| 28/09 | Transferência M5.14 → M5.24-D4; relatório de progresso; diagnóstico de **não-determinismo de embeddings** (D4, 6 revisões) | `md/Caribbean_Pirates_GPT_Medusa_Transferencia…`, `docs/M5.24-D4*` |
+| 29/09 | D7/D8/D9 (origem do cold/warm) + **E1/E2 BGE-M3** (determinismo e qualidade vs modelo alternativo) | `docs/M5.24-D7..E2*` |
+| 30/09 | **MEDUSA-AEL B1–B6** — laboratório de engenharia supervisionada com Codex (auth, sandbox, multiagente adversarial) | `script/MEDUSA-AEL-B*.py`, `docs/MEDUSA-AEL-B*` |
+| 01/10 | **Produção**: `MEDUSA-PRODUCTION-R1` ativa Medusa Core/Davy-Jones; relatório de status completo; backup com árvore extraída (79 itens) | `md/RELATORIO-MEDUSA-DAVY-JONES-STATUS-2026-10-01.md`, `backups/operational-20261001T121501446664Z/` |
+| 02/10 → 25/10 | **Snapshots operacionais diários automáticos** (timer systemd, ~06:35 UTC; 34 snapshots tar.gz + sha256 + manifest) | `backups/Medusa/operational-2026100x…` |
+| 19/10 → 25/10 | Backups diários do **Hermes-lab/Honcho** (8 tar.gz, últimos ~72 MB) | `backups/hermes-lab/hermes-*.tar.gz` |
+| 25/10 | Documentação da fase (este arquivo) | `medusa-opencode/docs/pre-projeto` |
+
+## 16. Infraestrutura da Fase 2 (Proxmox)
+
+### 16.1 Host `pve-asus`
+- **Proxmox VE 9.x** (kernel PVE `7.0.2-6` linux) · mobo ASUS TUF GAMING B650M-E WIFI
+- CPU **Ryzen 9 9950X3D** · 32 GB DDR5 · RTX 5090 32 GB **passada integralmente à VM** (IOMMU+VFIO validados)
+- Kingston NV3 NVMe ~1 TB (limitação de link PCIe x2 observada — *constatação do acervo*)
+- BIOS ajustado pelo operador conforme §3.1 (XMP/EXPO + PCIe Gen5)
+
+### 16.2 VM "Medusa" (VMID 1001)
+- Ubuntu Server **26.04.1 LTS** · **30 vCPU** · **24 GB RAM** · disco **750 GB**
+- **Tailscale** operacional · Docker operacional · `tlandskron` fora do grupo `docker` (regra permanente)
+
+### 16.3 Serviços centrais da VM
+PostgreSQL **+ pgvector** · Redis · Ollama · **Qdrant** · Docling Serve · Mem0 OSS (Hermes Engineering)
+
+### 16.4 Embedding contratado (decisão de engenharia)
+- Modelo: **qwen3-embedding:4b** · dimensão fixa **2560**
+- Qdrant escolhido para índice 2560; **não-determinismo de embeddings** detectado ⇒ cadeia D4 (6 diagnósticos)
+  + comparativo bge-m3 (E1/E2) — *corpus sempre congelado por SHA antes/depois de qualquer mudança*
+
+## 17. Aplicação da Fase 2 (código e gates)
+
+### 17.1 Medusa Core — `http://127.0.0.1:8765`
+- Python 3.14 **stdlib-only** (sem dependências extras) — `medusa/core/medusa_core/{__main__,workspace}.py`
+- Recuperação de **evidência** com proveniência (documento + páginas + chunk) e estado explícito:
+  `GROUNDED / PARTIAL_REVIEW / ABSTAIN / REVIEW_REQUIRED`
+- *"Recuperação vazia nunca estabelece conclusão jurídica"* — garantia de interface (não-generativa)
+- Corpus canônico: **206 pontos** Qdrant (`medusa_rag_chunks_v1`), coleção `medusa_workspace_*` por documento;
+  `config/core.json` aponta chunks M5.11 `c-flow-balanced` (SHA `4309a4e7…`)
+- UI embutida CSP-restrita (`X-Frame-Options`, sem logging de payload) · payload `POST /query|/draft|/workspace/query`
+- Isolamento de escopo: `canonical` (corpus validado) vs `workspace` (ingestão incremental)
+
+### 17.2 Davy-Jones — `http://127.0.0.1:8766`
+- Orquestrador de jobs com **fila persistente** (`data/jobs.sqlite3`, SQLite WAL, ≤3 tentativas, idempotency-key)
+- Tipos de job: `query / draft / workspace_query / workspace_draft / documents / readiness / ingest`
+- Ingestão segura somente de `/home/tlandskron/medusa/documents/incoming` (≤20 MiB, sem symlink)
+- Administração: token local em `config/admin.json` (mode 0600); bind **apenas em loopback** → acesso remoto só por SSH tunnel
+- Serviço `systemd --user` (`davy-jones.service`, `medusa-core.service`) + timers `medusa-davy-health` e `medusa-davy-backup`
+
+### 17.3 Hermes / Honcho / Calypso — cadeia de engenharia (separada da aplicação funcional)
+- **Calypso**: gateway do Codex na C1 → C12 (r0–R2A) — preflights read-only, *freezes*, sandbox
+  (bubblewrap probe), userns/apparmor/seccomp forensics, socket activation nativa, unit verify (systemd)
+- **Hermes nativo no Ubuntu (H1–H30)**: política ABC *operation-by-operation* (audit → install →
+  e2e → repair → revalidate), gates de approval integrados, 2560-dim Mem0, terminal policy simulation (H28/H29)
+- **Honcho v3.2.0 (U0.16)**: laboratório isolado com privilégio mínimo PostgreSQL, migrations Scram
+  controladas, runtime API com pipeline multipeer/deriver com Injeção de Falha Controlada (IFC), embedding real
+  qwen3 (U0.16.3.7.10.6.5-R1..R9 - integração persistente quebrada/rollback/compose-service-key → R3) —
+  *caso de estudo de rollback organizado*
+
+### 17.4 Regra permanente de autorização (regra de ouro da fase)
+- **Nenhum script sem autorização explícita e específica**; cada etapa versionada (`-R<n>`, `-REENTREGA`, `CLOSE`)
+- **Toda validação é tripla:** JSON com data/hora + cópia `.log` idêntica em `/home/tlandskron/log` + registro `.txt` estável
+- *"Plano → documentar → revisar → autorizar → executar → validar → documentar" — nenhuma fase é
+  considerada concluída só porque um comando terminou sem erro*
+
+## 18. Estado em 01/10/2026 (relatório oficial)
+- ✅ Operacional: Medusa Core, Davy-Jones (Agent/Tool-Orchestrator), Mem0, Qdrant, Ollama (qwen3:8b), RAG API/Worker, Docling, SearXNG, **PostgreSQL/pgvector + Redis**, RTX 5090/CUDA, backup remoto SMB/Tailscale
+- ❌ Pendente: Open WebUI (não instalada), Nginx/HTTPS, Prometheus/Grafana/Loki/Alertmanager/Uptime-Kuma, Planner avançado, **backup externo (nuvem/home-office)**, monitoramento externo
+- 🔒 Preservado: M5.23 SHA idêntico em 3c3902f3…; corpus 206 pontos intacto
+- Testes registrados: 18 regressões recuperação + 12 extensão + 4 fila DJ + 8 Chromium + 2 PDFs reais consultados com página/chunk + outage/kill/recovery/backup-restore
+
+## 19. Volume de trabalho documentado (da Fase 2)
+
+**Fase de construção intensiva** (densidade comprovada pela data/hora dos logs):
+
+| Janela | Dias com evidência | Logs no período |
+|---|---|---:|
+| 13/09–18/09 (Proxmox+BIOS+arquitetura) | 4 | ~5 relatórios grandes |
+| 19/09–21/09 (setup laboratórios) | 3 | **228** |
+| 22/09–27/09 (M4.x pipeline RAG) | 6 | 89 |
+| 28/09–29/09 (M5.x + determinismo) | 2 | 43 |
+| 30/09–01/10 (AEL + produção R1) | 2 | ~40 |
+
+Total: **≈400 logs/validações auditáveis em 13 dias** de execução (12/09 → 01/10) + **24 dias de operação
+automática de backup** (02/10 → 25/10, timer diário sem intervenção) + **8 backups Hermes** (19–25/10).
+- Estimativa conservadora de esforço humano: **Fase 1 ≈ 30–40 h · Fase 2 construção ≈ 60–90 h ·
+  Fase 2 operação ≈ 8–12 h** de supervisão ao longo de 6 semanas. **TOTAL PRÉ-PROJETO ≈ 100–140 h**
+  entre agosto e outubro/2026.
+
+## 20. Lições da Fase 2 (para DevOps futuro)
+
+1. **Proxmox + passthrough**: IOMMU/VFIO validados **antes** de qualquer serviço; sem o
+   *Above 4G Decoding* + *Re-Size BAR* a 5090 (32 GB de VRAM) pode não mapear toda a memória no guest.
+2. **Embedding não-determinista é problema real**: gerou 11 diagnósticos dedicados (série D4) +
+   comparativo de modelo — proteger o corpus por **SHA antes/depois** evitou regressão silenciosa.
+3. **Rollback elegante**: caso Honcho compose-service-key (U0.16.3.7.10.6.5-R9) — serviço quebrado →
+   rollback → forense read-only → correção nova revisionada (R9-R1..R3) sem perder o histórico.
+4. **Artefato prevalece sobre conversa**: o "estado oficial" (25/09) explicita
+   *"em conflito entre uma resposta conversacional e os artefatos validados, os artefatos prevalecem"* —
+   mecanismo anti-deriva potente para agentes de IA.
+5. **Fecho de cadeia (CLOSE)**: toda etapa complexa termina com `CLOSE` documentado
+   (M5.8/M5.9/M5.10 CLOSE), reconciliando governança e marcando o que existe como encerrado.
+6. **Sequência BIOS/GPU**: validar SVM/IOMMU/SecureBoot/Above4G/ReBAR/iGPU-as-console/PCIe-Gen5
+   *antes* de subir serviços — o checklist XLSX é o artefato de referência.
+7. **A proibição de `down -v` sobreviveu à mudança de era**: mesma regra crítica do §5 aplicada
+   ao novo ambiente (Proxmox/Docker/Tailscale).
+8. **Dados sensíveis no backup**: o espelho contém documentos reais de processo (PDF jurídico de 10 MB
+   e coleções Qdrant com conteúdo de cliente) — **acervo confidencial**; jamais publicá-lo em
+   repositório público ou serviço externo.
+
+## 21. Inventário resumido (Fase 2)
+
+```
+projeto-medusa_e_davy-jones_17092026/
+├── md/        15 relatórios/status (19/09 → 01/10)
+├── json/      4 diagnósticos com data/hora (28/09)
+├── docx/pdf/  6 + 9 relatórios (inclui Manual_Usuario_Medusa_Evidencia_Juridica_v1.pdf)
+├── png/       12 imagens kit visual
+├── txt/       13 relatórios de transferência e diagnósticos
+├── script/    210 scripts (U0.13/14/15/16, C1–C12, H1–H30, M4.x, M5.x, MEDUSA-AEL/BACKUP/PROD)
+├── log/       456 logs (espelho 1:1 das validações; 406 datados)
+├── docs/      evidências por etapa em tríade (.json + .log + .txt) + DAVY-* (SearXNG/TOOLS/UI)
+├── docs-old/  17: relatórios Proxmox, BIOS.pdf, checklist XLSX, conversas IA
+├── incoming/  2 PDFs jurídicos reais do pipeline (processo TRT-4 10 MB)
+└── backups/
+    ├── Medusa/                 34 snapshots tar.gz (10 do dia 01/10 + 24 diários até 25/10, ~43 MB cada)
+    ├── operational-20261001…/  árvore do deploy EXTRAÍDA (79 itens com código-fonte, config e corpus)
+    └── hermes-lab/             8 backups Hermes (19–25/10, ~72 MB cada)
+```
+
+---
+
+## 22. Glossário complementar (Fase 2)
+
+- **Caribbean Pirates GPT** — nome do umbrella do projeto na Fase 2 (Davy-Jones + Medusa + Hermes Engineering).
+- **pve-asus / VMID 1001** — host Proxmox e a VM Ubuntu "Medusa".
+- **M4.x / M5.x** — cadeias versionadas do pipeline de documentos/RAG (ex.: M5.11 = materialização
+  c-flow-balanced do corpus canônico; M5.14 = indexação Qdrant controlada).
+- **CORPUS CANÔNICO** — 206 pontos vetoriais validados, preservados por SHA entre entregas.
+- **R-n / D-n / B-n / E-n** — sufixos de revisão/diagnóstico/marco no esquema de versionamento de scripts:
+  `Nome-da-etapa-v1.0.0.py` + `-R1` (revisão) + `-D1` (diagnóstico) + `CLOSE` (fecho).
+- **ABC (Hermes)** — política de aprovação por operação no Hermes Engineering.
+- **Davy-Jones ≠ Hermes Engineering** — orquestrador funcional vs. engenharia/manutenção (isolamento permanente).
+
+---
+
+*Documento gerado em 25/10/2026 a partir de leitura somente leitura.*
+- **Fonte Parte I:** 88 itens de `Y:\Machine Learning\medusa\` — diagnósticos v1 e v2 de 17/08/2026.
+- **Fonte Parte II:** 1.257 itens de `C:\Intel\medusa\projeto-medusa_e_davy-jones_17092026\` —
+  estado oficial 25/09, relatório de status 01/10/2026, diagnósticos Proxmox de 16–18/09/2026 e
+  checklist de BIOS/UEFI (`docs-old/`), logs diários e backups até 25/10/2026.*
