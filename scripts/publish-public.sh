@@ -116,8 +116,21 @@ echo ""
 # --no-verify: o hook local veria o mirror temporario (sem os nossos hooks);
 # a garantia real aqui e a filtragem acima + a camada 3 (CI do GitHub).
 echo "publish-public: enviando para $PUBLIC_URL"
-git -C "$tmp/mirror.git" push --no-verify --force \
-    "$PUBLIC_URL" "refs/heads/$BRANCH:refs/heads/$BRANCH"
+if ! git -C "$tmp/mirror.git" push --no-verify --force \
+        "$PUBLIC_URL" "refs/heads/$BRANCH:refs/heads/$BRANCH"; then
+    echo "" >&2
+    echo "ERRO: o GitHub recusou o envio." >&2
+    echo "" >&2
+    echo "  Se a mensagem for 'non-fast-forward' / 'Updates rejected', o historico" >&2
+    echo "  PRIVADO foi reescrito (rebase/amend) depois da ultima publicacao." >&2
+    echo "  A ruleset 'guard-sensitive' do repositorio publico proibe force-push," >&2
+    echo "  de proposito. Nesse caso:" >&2
+    echo "    1. confirme que o novo historico nao traz arquivo do manifesto;" >&2
+    echo "    2. retire temporariamente a regra non_fast_forward na ruleset 25828972;" >&2
+    echo "    3. publique e recoloque a regra." >&2
+    echo "" >&2
+    exit 1
+fi
 
 # --- [6] sincroniza o remote-tracking local -----------------------------------
 git fetch --quiet public 2>/dev/null || true
