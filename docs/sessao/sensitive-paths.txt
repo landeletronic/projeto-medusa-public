@@ -1,0 +1,49 @@
+# =============================================================================
+# sensitive-paths.txt — MANIFESTO ÚNICO DE ARQUIVOS SENSÍVEIS
+# =============================================================================
+# Fonte da verdade para TODAS as camadas de proteção do repositório:
+#
+#   1) .gitignore ............... impede `git add` acidental
+#   2) .githooks/pre-push ....... bloqueia push para o repositório PÚBLICO
+#   3) .github/workflows/... .... bloqueia no servidor (incontornável)
+#   4) scripts/publish-public.* . remove do histórico antes de publicar
+#   5) AGENTS.md / .opencode .... o agente NÃO pergunta, apenas exclui
+#
+# FORMATO
+#   - uma entrada por linha, caminho RELATIVO à raiz do repositório
+#   - linhas iniciadas por "#" e linhas vazias são ignoradas
+#   - prefixo "glob:" = curinga (o * casa também com "/", ex.: glob:*.pem)
+#   - sem prefixo = caminho exato
+#   - COMPARAÇÃO SEM DIFERENÇA DE MAIÚSCULA (Windows tem core.ignorecase=true)
+#
+# MANUTENÇÃO: adicionar um arquivo sensível aqui = protegido em 5 lugares.
+# Nunca remover uma entrada sem antes apagar o arquivo de TODO o histórico
+# (git filter-repo) e rotacionar o que ele continha.
+# =============================================================================
+
+# Export de sessão com chaves, IPs Tailscale e credenciais reais
+docs/sessao/acesso-ao-host-medusa.json
+acesso-ao-host-medusa.json
+
+# Chaves e certificados
+glob:*.pem
+glob:*.key
+glob:*.p12
+glob:*.pfx
+glob:*.ppk
+glob:id_rsa*
+glob:id_ed25519*
+glob:id_ecdsa*
+glob:*.keystore
+
+# Segredos de runtime / variáveis de ambiente
+glob:*.env
+glob:.env*
+glob:secrets/*
+glob:*.secret
+glob:*_password
+glob:*password*.txt
+
+# Backups e dumps que possam conter dados
+glob:*.sql.gz
+glob:*.dump

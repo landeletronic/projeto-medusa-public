@@ -1,0 +1,113 @@
+#!/bin/sh
+# =============================================================================
+# pre-push — BLOQUEIA arquivos sensiveis em qualquer remote que NAO seja o
+#            repositorio PRIVADO.
+#
+# Instalado por:  git config core.hooksPath .githooks
+#                 (scripts/setup-repo.sh | scripts/setup-repo.ps1)
+#
+# Portabilidade: POSIX sh — roda no Git for Windows (sh.exe) e no
+#                 Linux/omarchy (sh ou bash). Nao usar bashisms.
+#
+# Le as duas fontes de verdade:
+#   docs/sessao/sensitive-paths.txt  (manifesto canonico)
+#   .gitignore                       (mirror, protege mesmo sem hook)
+# via `git check-ignore`, que ja entende curinga e comentarios.
+#
+# Escape de emergencia: MEDUSA_PUSH_ALLOW_SENSITIVE=1 (o CI do GitHub ainda
+# vai recusar no servidor — a camada 3 nunca e contornavel).
+# =============================================================================
+set -u
+
+remote="${1:-}"
+url="${2:-}"
+
+# --- 1. So o repositorio PRIVADO e autorizado a receber conteudo sensivel -----
+PRIVATE_URL_GLOB="*/projeto-medusa.git"
+
+is_private=0
+case "$url" in
+    $PRIVATE_URL_GLOB) is_private=1 ;;
+esac
+# sem URL (git raramente omite): usa o nome do remote
+[ -n "$url" ] || { [ "$remote" = "origin" ] && is_private=1; }
+
+if [ "$is_private" = "1" ]; then
+    exit 0
+fi
+
+# --- 2. Ambiente do repositorio ----------------------------------------------
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$root" || exit 0
+
+manifest="docs/sessao/sensitive-paths.txt"
+if [ ! -f "$manifest" ]; then
+    manifest=""
+fi
+
+ZERO="0000000000000000000000000000000000000000"
+tmp=$(mktemp 2>/dev/null || echo "/tmp/pre-push.$$")
+violations_file="${tmp}.v"
+: > "$violations_file"
+
+# --- 3. Varre TODOS os commits que serao enviados -----------------------------
+# (nao so o diff final: um arquivo sensivel que entra e sai no meio do historico
+#  tambem vaza — o GitHub guarda cada commit.)
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$ZERO" ] && continue
+
+    if [ "$remote_sha" = "$ZERO" ]; then
+        rev="$local_sha"                      # ref novo: historico inteiro
+    else
+        rev="$remote_sha..$local_sha"         # ref existente: apenas o delta
+    fi
+
+    git rev-list "$rev" 2>/dev/null | while read -r commit; do
+        git ls-tree -r --name-only "$commit"
+    done | sort -u > "${tmp}.files" 2>/dev/null
+
+    [ -s "${tmp}.files" ] || continue
+
+    if [ -n "$manifest" ]; then
+        # shellcheck disable=SC2086
+        git -c core.excludesFile="$root/$manifest" \
+            check-ignore --no-index --stdin -v < "${tmp}.files" >> "$violations_file" 2>/dev/null
+    else
+        git check-ignore --no-index --stdin -v < "${tmp}.files" >> "$violations_file" 2>/dev/null
+    fi
+done
+
+rm -f "${tmp}" "${tmp}.files"
+
+# --- 4. Resultado -------------------------------------------------------------
+if [ ! -s "$violations_file" ]; then
+    rm -f "$violations_file"
+    exit 0
+fi
+
+if [ "${MEDUSA_PUSH_ALLOW_SENSITIVE:-0}" = "1" ]; then
+    echo "pre-push: AVISO — override ativo (MEDUSA_PUSH_ALLOW_SENSITIVE=1)." >&2
+    echo "          O CI do GitHub ainda vai recusar este conteudo." >&2
+    sort -u "$violations_file" >&2
+    rm -f "$violations_file"
+    exit 0
+fi
+
+echo "" >&2
+echo "╔══════════════════════════════════════════════════════════════════════╗" >&2
+echo "║  PUSH BLOQUEADO — arquivo sensivel destinado a repositorio publico   ║" >&2
+echo "╚══════════════════════════════════════════════════════════════════════╝" >&2
+echo "" >&2
+echo "  Remote : $remote" >&2
+echo "  URL    : ${url:-<desconhecida>}" >&2
+echo "" >&2
+echo "  Arquivos que casaram com a regra:" >&2
+sort -u "$violations_file" | sed 's/^/    /' >&2
+echo "" >&2
+echo "  Regra  : docs/sessao/REGRAS-SENSIVEIS.md" >&2
+echo "  Correto: ./scripts/publish-public.sh   (filtra o historico e publica)" >&2
+echo "  Ou     : git restore --staged <arquivo> e refaca o commit sem ele" >&2
+echo "" >&2
+
+rm -f "$violations_file"
+exit 1

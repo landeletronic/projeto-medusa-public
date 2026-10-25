@@ -338,7 +338,15 @@ O sistema é **deliberadamente conservador**: ele responde *"onde está a prova"
 ```
 projeto-medusa/
 ├── README.md                      ← este documento (único arquivo de raiz, além do .gitignore)
-├── .gitignore
+├── AGENTS.md                      # regras de trabalho para agentes de IA (qualquer máquina)
+├── .gitignore                     # inclui o espelho do manifesto de arquivos sensíveis
+├── .gitattributes                 # força LF em hooks/scripts (porta Windows ↔ Linux)
+├── .githooks/
+│   └── pre-push                   # bloqueia push de conteúdo sensível para o público
+├── .github/workflows/
+│   └── guard-sensitive.yml        # CI que impõe a regra no servidor (incontornável)
+├── .opencode/rules/               # regra do opencode: não pergunta, não publica
+├── scripts/                       # setup-repo · publish-public · selftest
 ├── config/                        # configuração de infraestrutura
 │   ├── docker-compose.yml
 │   ├── prometheus.yml
@@ -352,7 +360,10 @@ projeto-medusa/
 │   ├── observabilidade/           # stack de monitoramento e lacunas
 │   ├── relatorios/                # relatórios de entrega e de estado
 │   ├── inventario/                # inventário de diretórios do host
-│   └── sessao/                    # transcript de sessão (referência)
+│   ├── pre-projeto/               # histórico pré-projeto (fases 1 e 2)
+│   └── sessao/                    # ⚠️ sensível — manifesto e transcript
+│       ├── sensitive-paths.txt    #   lista única de arquivos proibidos no público
+│       └── REGRAS-SENSIVEIS.md    #   a regra e as 5 camadas
 └── assets/                        # PDFs e DOCX (artefatos gerados/de terceiros)
 ```
 
@@ -443,6 +454,29 @@ Cobertura dos testes: contrato de fila, idempotência, capacidade de admissão, 
 - **Autenticação:** token de administração (0600) + autenticação humana com argon2, CSRF, sessões e rate-limit.
 - **Fronteira:** todas as aplicações em `127.0.0.1`; acesso remoto somente via SSH autenticado + token.
 - **Segredos:** nunca versionados; `.env`, chaves e certificados estão no `.gitignore`.
+- **Repositório público x privado:** o repositório `projeto-medusa-public` é um
+  **espelho filtrado** do privado. Arquivos em `docs/sessao/sensitive-paths.txt`
+  (exports de sessão com chaves, IPs e credenciais) **nunca** podem ser publicados —
+  cinco camadas garantem isso:
+
+  | # | Camada | Arquivo | Contornável |
+  |---|---|---|---|
+  | 1 | Não rastrear | `.gitignore` (bloco mirror) | sim (`git add -f`) |
+  | 2 | Não enviar | `.githooks/pre-push` | sim (`--no-verify`) |
+  | 3 | **Não aceitar no servidor** | `.github/workflows/guard-sensitive.yml` | **não** |
+  | 4 | Publicar filtrado | `scripts/publish-public.{sh,ps1}` | — |
+  | 5 | Agente não pergunta | `AGENTS.md` + `.opencode/rules/` | — |
+
+  ```sh
+  ./scripts/setup-repo.sh        # ativa a camada 2 (1x por clone)
+  ./scripts/publish-public.sh    # ÚNICO caminho para o público (camada 4)
+  ./scripts/selftest.sh          # valida as 5 camadas (18 verificações)
+  ```
+  Documentação completa: [`docs/sessao/REGRAS-SENSIVEIS.md`](docs/sessao/REGRAS-SENSIVEIS.md).
+- **Incidente 21–25/10/2026:** um export de sessão de 131 KB foi versionado e
+  exposto no repositório público. O histórico foi reescrito
+  (`git filter-repo`), o repo antigo foi substituído e as credenciais devem ser
+  **rotacionadas** — apagar do `HEAD` não remove o conteúdo de commits antigos.
 - **Registro de acesso:** 1 ADMIN + 1 USER habilitados; 15 logins, 13 falhas e 1 rate-limit nos últimos 7 dias.
 - **Fronteira legal (inegociável):**
   - Recuperação canônica **não gera conclusão jurídica**.

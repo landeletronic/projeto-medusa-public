@@ -1,0 +1,24 @@
+# =============================================================================
+# .gitattributes - normalizacao de arquivos versionados
+# =============================================================================
+
+# --- Texto: sempre LF no repositorio (Windows converte na leitura) ------------
+* text=auto
+
+# --- Hooks e scripts DEVEM ficar com LF ---------------------------------------
+# Sem esta linha o Git for Windows grava CRLF e o shebang "#!/bin/sh\r" quebra
+# o hook no proximo checkout. Exige para Windows e omarchy/Arch funcionarem igual.
+.githooks/** text eol=lf
+scripts/*.sh text eol=lf
+*.sh text eol=lf
+
+# --- PowerShell pode ficar CRLF (Windows aceita os dois) ----------------------
+*.ps1 text eol=crlf
+
+# --- Binarios: nunca tentar diff/merge ----------------------------------------
+*.png binary
+*.jpg binary
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.zip binary

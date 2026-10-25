@@ -14,3 +14,32 @@ desktop.ini
 _*
 .vscode/
 .idea/
+
+# =============================================================================
+# SENSIVEIS - NUNCA PUBLICAR (MIRROR de docs/sessao/sensitive-paths.txt)
+# =============================================================================
+# Este bloco e uma copia de docs/sessao/sensitive-paths.txt (formato gitignore).
+# O CI compara os dois e FALHA se divergirem - edite os dois lados juntos.
+# Motivo de existir aqui: protege `git add` mesmo em maquina SEM hook instalado.
+# Ver docs/sessao/REGRAS-SENSIVEIS.md
+# --- mirror ---
+docs/sessao/acesso-ao-host-medusa.json
+acesso-ao-host-medusa.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.ppk
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.keystore
+*.env
+.env*
+secrets/*
+*.secret
+*_password
+*password*.txt
+*.sql.gz
+*.dump
+# --- fim mirror ---

@@ -1,0 +1,101 @@
+# =============================================================================
+# guard-sensitive — CAMADA 3 (a autoridade)
+#
+# As camadas 1 e 2 (gitignore + hook pre-push) moram na maquina e podem ser
+# contornadas (git add -f, git push --no-verify, maquina sem hook instalado).
+# ESTA roda no GitHub: se o conteudo sensivel chegar, o workflow fica vermelho
+# e, com o ruleset exigindo o check, o branch bloqueado.
+#
+# Regra aplicada: docs/sessao/sensitive-paths.txt (manifesto unico)
+# Documentacao  : docs/sessao/REGRAS-SENSIVEIS.md
+#
+# `if: github.event.repository.private == false` — no repositorio PRIVADO o
+# arquivo sensivel e legitimo, entao a imposicao so existe no publico. Assim o
+# mesmo arquivo pode viver nas duas historias sem divergencia de conteudo.
+# =============================================================================
+name: guard-sensitive
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: nenhum arquivo sensivel
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (historico completo)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Manifesto presente
+        run: |
+          test -f docs/sessao/sensitive-paths.txt || {
+            echo "::error::docs/sessao/sensitive-paths.txt ausente — sem regra nao ha guarda."
+            exit 1
+          }
+
+      - name: Espelho .gitignore esta sincronizado com o manifesto
+        run: |
+          set -euo pipefail
+          manifesto=$(grep -v -e '^#' -e '^$' docs/sessao/sensitive-paths.txt \
+                     | sed 's/^glob://' | sort -u)
+          espelho=$(sed -n '/^# --- mirror ---$/,/^# --- fim mirror ---$/p' .gitignore \
+                   | grep -v -e '^#' -e '^$' | sort -u)
+          if [ "$manifesto" != "$espelho" ]; then
+            echo "::error::.gitignore (bloco mirror) divergiu de docs/sessao/sensitive-paths.txt"
+            diff <(printf '%s\n' "$espelho") <(printf '%s\n' "$manifesto") || true
+            echo "Edite os dois arquivos — o espelho protege maquinas sem hook."
+            exit 1
+          fi
+          echo "OK: $(printf '%s\n' "$manifesto" | wc -l) padroes em sincronia"
+
+      - name: Nenhum arquivo sensivel em NENHUM commit do historico
+        run: |
+          set -euo pipefail
+          manifest="$PWD/docs/sessao/sensitive-paths.txt"
+          fail=0
+          total=0
+          while read -r commit; do
+            total=$((total + 1))
+            files=$(git ls-tree -r --name-only "$commit")
+            [ -z "$files" ] && continue
+            set +e
+            out=$(printf '%s\n' "$files" \
+                  | git -c core.excludesFile="$manifest" check-ignore --no-index --stdin -v 2>&1)
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              echo "::error::commit $(git log -1 --format='%h %s' "$commit") contem arquivo sensivel"
+              printf '%s\n' "$out"
+              fail=1
+            elif [ "$rc" -ne 1 ]; then
+              echo "::error::falha ao avaliar o manifesto (exit $rc)"
+              printf '%s\n' "$out"
+              fail=1
+            fi
+          done < <(git rev-list --all)
+          echo "varridos $total commits"
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "REGRAS: docs/sessao/REGRAS-SENSIVEIS.md"
+            echo "Para remover do historico: git filter-repo --invert-paths --path <arquivo>"
+            echo "Depois: ROTACIONE as credenciais que o arquivo continha."
+            exit 1
+          fi
+          echo "OK: historico limpo"
+
+      - name: Varredura de chaves privadas (defesa adicional)
+        run: |
+          set -euo pipefail
+          if git grep -n -I -E -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' $(git rev-list --all) -- 2>/dev/null; then
+            echo "::error::chave privada encontrada no historico"
+            exit 1
+          fi
+          echo "OK: nenhuma chave privada no historico"
